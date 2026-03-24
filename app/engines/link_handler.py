@@ -59,10 +59,8 @@ async def fact_check_link(url: str) -> str:
 
     parts: list[str] = []
 
-    parts.append(f"🔗 *Analyzing link:* _{domain}_")
-    parts.append(f"{classification['emoji']} Source credibility: *{classification['trust']}*")
-
     if classification["tier"] == "blocked":
+        parts.append(f"🔗 *Link from:* _{domain}_")
         parts.append("")
         parts.append(
             "🚫 *Warning:* This domain is on our blocklist of known unreliable sources. "
@@ -73,6 +71,7 @@ async def fact_check_link(url: str) -> str:
         return "\n".join(parts)
 
     if classification["tier"] == "fact_checker":
+        parts.append(f"🔗 *Link from:* _{domain}_")
         parts.append("")
         parts.append(
             "✅ This is a recognized fact-checking organization. "
@@ -83,6 +82,7 @@ async def fact_check_link(url: str) -> str:
     article_text = await _extract_article(url)
 
     if not article_text:
+        parts.append(f"🔗 *Link from:* _{domain}_")
         parts.append("")
         parts.append(
             "I couldn't extract the article content. "
@@ -90,10 +90,7 @@ async def fact_check_link(url: str) -> str:
         )
         return "\n".join(parts)
 
-    parts.append("")
-    parts.append("---")
-    parts.append("")
-    parts.append("📝 *Checking claims from this article:*")
+    parts.append(f"📝 *Checking claims from this article:*")
     parts.append("")
 
     text_message, _ = await fact_check_text(article_text[:3000])

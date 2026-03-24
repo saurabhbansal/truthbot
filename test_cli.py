@@ -102,8 +102,6 @@ async def handle_text(text: str) -> None:
 
 
 async def handle_link(url: str) -> None:
-    classification = classify_url(url)
-    print_info(f"Domain: {classification['domain']} | Trust: {classification['trust']}")
     print_info("Analyzing article... (this takes 10-20 seconds)")
     start = time.time()
     message = await fact_check_link(url)
