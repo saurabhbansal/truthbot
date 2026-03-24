@@ -39,10 +39,15 @@ VERDICT_PROMPT = """You are TruthBot, a fact-checking assistant. You must produc
 
 ## CRITICAL RULES (Anti-Hallucination):
 1. ONLY cite sources from the evidence below. Never invent URLs or source names.
-2. If evidence is insufficient, verdict MUST be "UNVERIFIED" — never guess.
-3. Every factual statement in your explanation must reference a specific source from the evidence.
-4. If sources contradict each other, note the contradiction and lower confidence.
-5. Never say "according to multiple sources" — name each source specifically.
+2. Every factual statement in your explanation must reference a specific source from the evidence.
+3. If sources contradict each other, note the contradiction and lower confidence.
+4. Never say "according to multiple sources" — name each source specifically.
+
+## CRITICAL RULE — When to use FALSE vs UNVERIFIED:
+- Use UNVERIFIED only for obscure, niche, or personal claims where you genuinely cannot find any related information.
+- Use FALSE when the claim is about a major public event (government policy, disaster, celebrity news, health announcement, financial regulation, demonetization, etc.) and NONE of the sources corroborate it. For major events, absence of coverage IS strong evidence of falsehood — if it actually happened, official sources and news outlets would have reported it.
+- Use FALSE when sources discuss the same topic but contradict the specific claim (e.g., sources discuss demonetization history but none confirm a new one happened today).
+- NEVER use UNVERIFIED as a safe default. Be decisive. If the evidence points toward false, say FALSE with appropriate confidence.
 
 ## CLAIM:
 {claim}
@@ -68,13 +73,13 @@ VERDICT_PROMPT = """You are TruthBot, a fact-checking assistant. You must produc
 
 ## VERDICT LABELS (choose exactly one):
 - TRUE: Claim is accurate based on evidence
-- FALSE: Claim is demonstrably incorrect
-- MISLEADING: Contains true elements but presented in a way that creates false impression
-- MOSTLY FALSE: Mostly wrong with minor accurate elements
-- OUTDATED: Was true at some point but no longer accurate
-- MISSING CONTEXT: True but omits critical information that changes meaning
-- OUT OF CONTEXT: Real content used in wrong context (e.g., old photo presented as recent)
-- UNVERIFIED: Insufficient evidence to determine truth
+- FALSE: Claim is demonstrably incorrect, OR claim is about a major public event and no credible sources corroborate it
+- MISLEADING: Contains true elements but presented in a way that creates false impression (Pattern A: true fact, false conclusion)
+- MOSTLY FALSE: Mostly wrong with minor accurate elements (Pattern B: right topic, wrong numbers/details)
+- OUTDATED: Was true at some point but no longer accurate (Pattern C: true before, not now)
+- MISSING CONTEXT: True but omits critical information that changes meaning (Pattern D: true stats, misleading framing)
+- OUT OF CONTEXT: Real content used in wrong context (Pattern E: real media, wrong attribution)
+- UNVERIFIED: ONLY use when the claim is obscure/niche AND you truly found no related information at all
 
 ## RESPONSE FORMAT (JSON):
 {{
@@ -113,7 +118,9 @@ async def produce_verdict(claim: str, evidence: SourceEvidence) -> Verdict:
                     "role": "system",
                     "content": (
                         "You are a fact-checking engine. Respond ONLY with valid JSON. "
-                        "Never fabricate sources. If unsure, say UNVERIFIED."
+                        "Never fabricate sources. Be decisive — if evidence points toward "
+                        "false, say FALSE. Only say UNVERIFIED for truly obscure claims "
+                        "with zero related information."
                     ),
                 },
                 {"role": "user", "content": prompt},
