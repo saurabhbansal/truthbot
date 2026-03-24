@@ -30,26 +30,26 @@ _ONBOARDING_MSG = (
     "Hey there! I'm TruthBot 🔍\n\n"
     "I help you check if messages, images, links, and videos are real or fake.\n\n"
     "*HOW TO USE ME:*\n"
-    "Just forward me anything you want checked! That's it.\n\n"
+    "Forward or send me anything you want checked! That's it.\n\n"
     "I can check:\n"
     "• Text messages & chain forwards\n"
     "• News links & articles\n"
-    "• Images & screenshots\n"
+    "• Images & screenshots (forwarded or from your gallery)\n"
     "• Videos (AI-generated & deepfakes)\n\n"
-    "Try it now — forward me something from your groups!\n\n"
+    "Try it now — send me something suspicious!\n\n"
     'Type "help" anytime for tips.'
 )
 
 _HELP_MSG = (
     "Here's how I can help:\n\n"
-    "*FORWARD* me any:\n"
+    "*SEND or FORWARD* me any:\n"
     "• Text message or chain forward\n"
-    "• Image or screenshot\n"
+    "• Image or screenshot (from gallery or camera too!)\n"
     "• News link or article URL\n"
     "• Video clip\n\n"
     "And I'll tell you if it's real, fake, or misleading.\n\n"
     "*TIPS:*\n"
-    "• The more context, the better — forward the full message\n"
+    "• The more context, the better — send the full message\n"
     "• I work best with specific claims\n"
     "• I'll always tell you when I'm not sure\n\n"
     "*COMING SOON:*\n"
@@ -60,7 +60,7 @@ _HELP_MSG = (
 
 _UNSUPPORTED_MSG = (
     "Hey! I got your {type}, but I can't fact-check those yet.\n\n"
-    "Forward me a text message, image, video, or link and I'll get to work!"
+    "Send or forward me a text message, image, video, or link and I'll get to work!"
 )
 
 _AUDIO_MSG = (
@@ -72,7 +72,7 @@ _AUDIO_MSG = (
 _REDIRECT_MSG = (
     "Hey! I'm just a fact-checker, so I'm best at checking if something is true or fake.\n\n"
     "If you have a suspicious message, image, video, or link — "
-    "just forward it to me and I'll investigate!\n\n"
+    "just send or forward it to me and I'll investigate!\n\n"
     'Type "help" if you need tips.'
 )
 

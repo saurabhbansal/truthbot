@@ -82,6 +82,106 @@ SPECIAL:
 
 ---
 
+## Anti-Hallucination Pipeline (4 Steps)
+
+This prevents the LLM from making things up:
+
+1. **Search FIRST, reason SECOND** — The LLM never generates a verdict from its own knowledge. It first searches all 4 source layers, then synthesizes a verdict from the retrieved evidence only.
+2. **Mandatory citation** — Every factual statement in the verdict must cite a specific source from the search results. If the LLM can't cite a source, it must say "I couldn't verify."
+3. **Source validation** — Only sources actually returned by the search APIs are allowed. The LLM cannot "remember" URLs from training data.
+4. **Confidence calibration** — Final confidence = 40% LLM self-assessed + 60% source-layer confidence. This prevents overconfident LLM outputs when sources are weak.
+
+### Circular Misinformation Defense
+When the same false claim gets copy-pasted across dozens of low-quality sites:
+- **Source deduplication**: If 10 sites have identical text, treated as 1 source, not 10
+- **Absence-of-authority detection**: If a claim is "confirmed" by 50 blogs but ZERO established news outlets or official sources covered it, TruthBot flags this
+- **Layer 4 never cited**: General web results provide context only, never used as evidence in verdicts
+
+---
+
+## India-Specific Source Priorities
+
+Since the primary audience is Indian family groups, these sources are prioritized:
+
+| Category | Sources |
+|----------|---------|
+| Government fact-check | PIB Fact Check (pibfactcheck.in) — official government fact-check arm |
+| Indian fact-checkers | BOOM Live, Alt News, Factly, Newschecker, The Quint (all IFCN-certified) |
+| Government policy | pib.gov.in, india.gov.in, mha.gov.in |
+| Financial | rbi.org.in, sebi.gov.in, incometaxindia.gov.in, gst.gov.in |
+| Health | icmr.gov.in, mohfw.gov.in, aiims.edu |
+| Science/Space | isro.gov.in, dst.gov.in |
+| Weather/Disaster | imd.gov.in |
+| Indian news | NDTV, The Hindu, Indian Express, Hindustan Times, The Wire, Scroll.in, LiveMint |
+
+---
+
+## Database Schema (SQLite)
+
+Three tables:
+
+```sql
+-- Verdict caching (24h TTL, hash-based dedup)
+cache: content_hash (PK), verdict_json, created_at
+
+-- User feedback on verdicts
+feedback: id, verdict_id, user_phone_hash, feedback_type, negative_reason,
+          source_link, source_quality, free_text, created_at
+
+-- Usage tracking
+usage_stats: id, user_phone_hash, message_type, verdict_label,
+             confidence, processing_ms, created_at
+```
+
+Phone numbers are never stored — only SHA-256 hashes (first 16 chars).
+
+---
+
+## Feedback Validation (Phase 2 Design — Not Built Yet)
+
+For MVP, all feedback is logged as-is. Phase 2 adds a 5-signal validation system to handle spite feedback and improve accuracy:
+
+1. **Source quality** — If user provides a correction link, check if it's from Layer 1-3 (credible) or Layer 4 (general web)
+2. **Consensus** — If 3 users say "wrong" on the same verdict, that's strong signal
+3. **User track record** — Users whose past feedback was validated get higher weight
+4. **Category patterns** — If TruthBot keeps getting "wrong" feedback on health claims, the health prompts need tuning
+5. **Recency** — Recent feedback weighted higher than old feedback
+
+---
+
+## WhatsApp API Notes
+
+- **Forwarded vs uploaded content**: WhatsApp API treats them identically. The only difference is a `forwarded: true` metadata flag (and sometimes `frequently_forwarded: true` for viral content)
+- **Frequently forwarded flag**: Useful signal — a frequently forwarded message is more likely to be viral misinformation
+- **Temporary vs permanent token**: Temporary tokens expire in 24 hours. For production, need a System User token (see WhatsApp setup Part C)
+- **Free tier**: 1,000 conversations/month free (a "conversation" is a 24-hour window with one user)
+- **Media download**: Images/videos must be downloaded via a 2-step process (get media URL → download bytes)
+
+---
+
+## Test Results (Validated Claims)
+
+These claims were tested and produced correct results:
+
+| Claim | Expected | Actual | Status |
+|-------|----------|--------|--------|
+| "Drinking warm water with lemon cures cancer" | FALSE | FALSE (with fact-checker sources) | PASS |
+| "India is the most populated country with 3B people" | Partial (TRUE + FALSE) | TRUE + FALSE (1.4B not 3B) | PASS |
+| "Earth revolves around Sun in 365.25 days" | TRUE | TRUE | PASS |
+| "URGENT: RBI banning 500 rupee notes from April 1" | FALSE | FALSE (with RBI sources) | PASS |
+| "Demonetization happened today" | FALSE | FALSE (after prompt fix) | PASS |
+| "WhatsApp charging Rs 5 per message" | FALSE | FALSE (after prompt fix) | PASS |
+| "Modi announced free electricity for all" | FALSE | FALSE (with PIB sources) | PASS |
+| "Congress ruled India for 60 years and did nothing" | FALSE | FALSE (corrected to ~30 years) | PASS |
+| "Elon Musk bought WhatsApp in 2026" | FALSE | FALSE | PASS |
+| "Ginger water cures bloating" | FALSE | FALSE (with PubMed sources) | PASS |
+| Snopes.com link | Fact-checker | Recognized as fact-checker | PASS |
+| Infowars.com link | Blocked | Blocked with warning | PASS |
+| NDTV.com link | News outlet | Article extracted + fact-checked | PASS |
+| The Hindu link | News outlet | Article extracted + fact-checked | PASS |
+
+---
+
 ## Key Design Decisions (and WHY)
 
 These decisions were made through iterative testing and discussion. Do NOT change them without good reason.
@@ -341,6 +441,58 @@ This is the detailed guide for when the spare phone number is available.
 | Advanced feedback validation | Medium | Low | Consensus scoring, user track record, category patterns |
 | Multi-language support | Low per language | Low | Add language detection, translate claims, respond in detected language |
 | Admin dashboard | Medium | Low | Web UI showing usage stats, feedback trends, verdict distribution |
+
+---
+
+## Acknowledgment Messages (UX Flow)
+
+TruthBot sends an immediate acknowledgment before processing, so users know it's working:
+
+| Content Type | Acknowledgment |
+|-------------|---------------|
+| Text | "Got it! Checking this now... ⏳ (usually takes 5-10 seconds)" |
+| Image | "Got your image! Analyzing it... 🔍 (this may take 10-15 seconds)" |
+| Video | "Got your video! This takes a bit longer to analyze — I'll get back to you in about 30-60 seconds. Hang tight! ⏳" |
+| Link | "Got the link! Let me check the article and the source... 🔍" |
+
+Errors get a friendly "Oops, something went wrong..." message (never stack traces).
+
+---
+
+## Sensationalist Language Detection
+
+TruthBot flags content with sensationalist patterns (defined in `app/sources/allowlists.py`):
+"SHOCKING", "They don't want you to know", "EXPOSED", "BREAKING", "Share before deleted", "Forward to everyone", "Urgent!!!", "100% proven", "Doctors hate this", "Big pharma", "Government hiding", "Wake up people", "BANNED"
+
+These patterns are used as signals for low credibility, not as automatic verdicts.
+
+---
+
+## Dependencies (requirements.txt)
+
+```
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+python-dotenv==1.1.0
+openai==1.68.2
+tavily-python==0.5.0
+google-cloud-vision==3.9.0
+pydantic==2.11.1
+python-multipart==0.0.20
+aiosqlite==0.21.0
+```
+
+---
+
+## Configuration Details (app/config.py)
+
+- **LLM model**: `gpt-4o-mini` by default (configurable via `OPENAI_MODEL` env var)
+- **WhatsApp API version**: v22.0
+- **Database**: SQLite file at `truthbot.db` (configurable via `DATABASE_PATH`)
+- **Hive API key**: Optional — if not set, AI detection is skipped gracefully
+- **META_APP_SECRET**: Optional — used for webhook signature verification (recommended for production)
+- **WHATSAPP_BUSINESS_ACCOUNT_ID**: Optional — only needed for some API calls
 
 ---
 
