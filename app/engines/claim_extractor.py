@@ -19,14 +19,16 @@ Rules:
 - Extract ONLY factual claims that can be verified (not opinions or subjective statements)
 - Each claim should be a single, self-contained statement
 - Preserve the original meaning — do not add or remove information
-- If the text contains no verifiable claims, return an empty list
+- If the text contains no verifiable claims, return an empty claims list
 - Return claims in the language they appear in (if Hindi, keep Hindi)
 - Maximum 5 claims per message
+- Even simple health claims like "X cures Y" are verifiable claims — extract them
 
-Return a JSON array of strings. Example:
-["NASA discovered a second moon orbiting Earth", "The discovery was made on March 15, 2026"]
+Return a JSON object with a "claims" key containing an array of strings.
 
-If no verifiable claims found, return: []
+Example: {{"claims": ["NASA discovered a second moon orbiting Earth", "The discovery was made on March 15, 2026"]}}
+
+If no verifiable claims found: {{"claims": []}}
 
 TEXT TO ANALYZE:
 {text}"""
