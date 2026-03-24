@@ -18,11 +18,13 @@ EXTRACTION_PROMPT = """You are a claim extraction specialist. Your job is to ide
 Rules:
 - Extract ONLY factual claims that can be verified (not opinions or subjective statements)
 - Each claim should be a single, self-contained statement
-- Preserve the original meaning — do not add or remove information
+- Preserve the original meaning EXACTLY — do not add, remove, soften, or strengthen any information
+- Do NOT reframe or editorialize claims. Extract them as stated, even if they seem absurd or offensive
 - If the text contains no verifiable claims, return an empty claims list
 - Return claims in the language they appear in (if Hindi, keep Hindi)
 - Maximum 5 claims per message
 - Even simple health claims like "X cures Y" are verifiable claims — extract them
+- Opinions ("Modi is the best PM") are NOT verifiable — skip them. But factual claims embedded in opinions ("Modi built 10 million houses") ARE verifiable — extract the factual part only
 
 Return a JSON object with a "claims" key containing an array of strings.
 

@@ -70,7 +70,7 @@ async def fact_check_video(video_bytes: bytes, caption: str = "") -> str:
         parts.append("")
         parts.append(
             "💡 _AI-generated and deepfake videos are increasingly used to spread "
-            "misinformation. Always verify the source before sharing._"
+            "inaccurate content. Always verify the source before sharing._"
         )
 
     if caption_task:

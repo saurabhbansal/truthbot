@@ -51,7 +51,7 @@ async def fact_check_image(image_bytes: bytes, caption: str = "") -> str:
             )
         parts.append("")
         parts.append(
-            "💡 _AI-generated images can be used to spread misinformation. "
+            "💡 _AI-generated images may not represent real events. "
             "Always verify the source before sharing._"
         )
 

@@ -66,7 +66,7 @@ async def fact_check_link(url: str) -> str:
         parts.append("")
         parts.append(
             "🚫 *Warning:* This domain is on our blocklist of known unreliable sources. "
-            "Content from this site frequently contains misinformation."
+            "Content from this site has frequently been found to be inaccurate."
         )
         parts.append("")
         parts.append("💡 _Look for the same story on established news outlets for reliable information._")
