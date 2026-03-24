@@ -1,16 +1,28 @@
+"""Content router -- dispatches incoming messages to the appropriate engine."""
+
 from __future__ import annotations
 
 import re
 from typing import Any
 
+from app.engines.image_handler import fact_check_image
+from app.engines.link_handler import extract_urls, fact_check_link
+from app.engines.text_handler import fact_check_text
+from app.engines.video_handler import fact_check_video
+from app.feedback.feedback_handler import (
+    generate_verdict_id,
+    handle_feedback_reason,
+    handle_feedback_response,
+    send_feedback_buttons,
+)
 from app.utils.logger import get_logger
+from app.whatsapp.media import download_media
 from app.whatsapp.sender import send_text
 
 logger = get_logger("router")
 
 _URL_PATTERN = re.compile(r"https?://[^\s]+")
 
-# Messages that trigger the help/onboarding flow
 _GREETING_WORDS = {"hi", "hello", "hey", "hola", "namaste", "start"}
 _HELP_WORDS = {"help", "menu", "commands", "?"}
 
@@ -104,15 +116,21 @@ async def _handle_text(sender: str, sender_name: str, message: dict) -> None:
         await _handle_link(sender, sender_name, text_body)
         return
 
-    # Fact-check the text claim
     await send_text(sender, "Got it! Checking this now... ⏳\n(usually takes 5-10 seconds)")
 
-    # TODO Phase 3: Replace with actual text fact-check engine
-    await send_text(
-        sender,
-        f"[DEBUG] Received text claim to fact-check:\n\n\"{text_body}\"\n\n"
-        "Fact-check engine coming in Phase 3!",
-    )
+    try:
+        result_message, verdicts = await fact_check_text(text_body)
+        await send_text(sender, result_message)
+
+        if verdicts:
+            verdict_id = generate_verdict_id()
+            await send_feedback_buttons(sender, verdict_id)
+    except Exception:
+        logger.exception("Text fact-check failed")
+        await send_text(
+            sender,
+            "Oops, something went wrong while checking this. Please try again in a moment!",
+        )
 
 
 async def _handle_image(sender: str, sender_name: str, message: dict) -> None:
@@ -122,14 +140,23 @@ async def _handle_image(sender: str, sender_name: str, message: dict) -> None:
 
     await send_text(sender, "Got your image! Analyzing it... 🔍\n(this may take 10-15 seconds)")
 
-    # TODO Phase 4: Replace with actual image analysis engine
-    await send_text(
-        sender,
-        f"[DEBUG] Received image to analyze:\n"
-        f"Media ID: {media_id}\n"
-        f"Caption: {caption or '(none)'}\n\n"
-        "Image analysis engine coming in Phase 4!",
-    )
+    try:
+        image_bytes = await download_media(media_id)
+        if not image_bytes:
+            await send_text(sender, "Sorry, I couldn't download the image. Try sending it again?")
+            return
+
+        result = await fact_check_image(image_bytes, caption=caption)
+        await send_text(sender, result)
+
+        verdict_id = generate_verdict_id()
+        await send_feedback_buttons(sender, verdict_id)
+    except Exception:
+        logger.exception("Image fact-check failed")
+        await send_text(
+            sender,
+            "Oops, something went wrong analyzing this image. Please try again!",
+        )
 
 
 async def _handle_video(sender: str, sender_name: str, message: dict) -> None:
@@ -143,91 +170,57 @@ async def _handle_video(sender: str, sender_name: str, message: dict) -> None:
         "I'll get back to you in about 30-60 seconds. Hang tight! ⏳",
     )
 
-    # TODO Phase 4b: Replace with actual video analysis engine
-    await send_text(
-        sender,
-        f"[DEBUG] Received video to analyze:\n"
-        f"Media ID: {media_id}\n"
-        f"Caption: {caption or '(none)'}\n\n"
-        "Video analysis engine coming in Phase 4b!",
-    )
+    try:
+        video_bytes = await download_media(media_id)
+        if not video_bytes:
+            await send_text(sender, "Sorry, I couldn't download the video. Try sending it again?")
+            return
+
+        result = await fact_check_video(video_bytes, caption=caption)
+        await send_text(sender, result)
+
+        verdict_id = generate_verdict_id()
+        await send_feedback_buttons(sender, verdict_id)
+    except Exception:
+        logger.exception("Video fact-check failed")
+        await send_text(
+            sender,
+            "Oops, something went wrong analyzing this video. Please try again!",
+        )
 
 
 async def _handle_link(sender: str, sender_name: str, text: str) -> None:
-    urls = _URL_PATTERN.findall(text)
+    urls = extract_urls(text)
+    if not urls:
+        await send_text(sender, _REDIRECT_MSG)
+        return
+
     await send_text(sender, "Got the link! Let me check the article and the source... 🔍")
 
-    # TODO Phase 5: Replace with actual link analysis engine
-    await send_text(
-        sender,
-        f"[DEBUG] Received link to fact-check:\n"
-        f"URL(s): {', '.join(urls)}\n\n"
-        "Link analysis engine coming in Phase 5!",
-    )
+    try:
+        result = await fact_check_link(urls[0])
+        await send_text(sender, result)
+
+        verdict_id = generate_verdict_id()
+        await send_feedback_buttons(sender, verdict_id)
+    except Exception:
+        logger.exception("Link fact-check failed")
+        await send_text(
+            sender,
+            "Oops, something went wrong checking this link. Please try again!",
+        )
 
 
 async def _handle_interactive(sender: str, sender_name: str, message: dict) -> None:
-    """Handle button/list replies (used for feedback)."""
+    """Handle button/list replies (feedback mechanism)."""
     interactive = message.get("interactive", {})
     reply_type = interactive.get("type", "")
 
     if reply_type == "button_reply":
         button_id = interactive.get("button_reply", {}).get("id", "")
-        await _handle_feedback_button(sender, button_id)
+        if button_id.startswith("fb_"):
+            await handle_feedback_response(sender, button_id)
     elif reply_type == "list_reply":
         list_id = interactive.get("list_reply", {}).get("id", "")
-        await _handle_feedback_list(sender, list_id)
-
-
-async def _handle_feedback_button(sender: str, button_id: str) -> None:
-    """Handle feedback button presses."""
-    if button_id == "feedback_helpful":
-        await send_text(sender, "Glad I could help! Forward me anything else you want checked. 👍")
-    elif button_id == "feedback_wrong":
-        from app.whatsapp.sender import send_list
-
-        await send_list(
-            sender,
-            "Thanks for letting me know! What was wrong?",
-            "Select reason",
-            [
-                {
-                    "title": "Feedback",
-                    "rows": [
-                        {"id": "fb_incorrect", "title": "Verdict is incorrect"},
-                        {"id": "fb_context", "title": "Missing important context"},
-                        {"id": "fb_sources", "title": "Sources seem unreliable"},
-                        {"id": "fb_other", "title": "Other"},
-                    ],
-                }
-            ],
-        )
-
-
-async def _handle_feedback_list(sender: str, list_id: str) -> None:
-    """Handle feedback list selection."""
-    if list_id == "fb_incorrect":
-        await send_text(
-            sender,
-            "Got it. If you have a link to a reliable source that shows the correct info, "
-            "send it and I'll take another look!\n\n"
-            "Otherwise, I've noted your feedback. Thanks for helping me improve! 🙏",
-        )
-    elif list_id == "fb_context":
-        await send_text(
-            sender,
-            "Thanks! I'll try to include more context next time. "
-            "If you can share what I missed, that would help a lot!",
-        )
-    elif list_id == "fb_sources":
-        await send_text(
-            sender,
-            "I appreciate that — I'll double-check my sources. "
-            "If you have a more reliable source, feel free to send it!",
-        )
-    elif list_id == "fb_other":
-        await send_text(
-            sender,
-            "Thanks for the feedback! Tell me more about what was wrong "
-            "and I'll use it to improve.",
-        )
+        if list_id.startswith("fbr_"):
+            await handle_feedback_reason(sender, list_id)

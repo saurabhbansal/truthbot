@@ -3,12 +3,19 @@ from __future__ import annotations
 from fastapi import APIRouter, Query, Request, Response
 
 from app.config import WHATSAPP_VERIFY_TOKEN
-from app.utils.logger import get_logger
 from app.router.content_router import route_message
+from app.utils.logger import get_logger
+from app.utils.rate_limiter import rate_limiter
+from app.whatsapp.sender import send_text
 
 logger = get_logger("webhook")
 
 router = APIRouter()
+
+_RATE_LIMIT_MSG = (
+    "Whoa, slow down! 😅 You're sending messages faster than I can check them.\n\n"
+    "Please wait a minute and try again."
+)
 
 
 @router.get("")
@@ -43,6 +50,11 @@ async def receive(request: Request) -> dict:
                     sender_name = ""
                     if contacts:
                         sender_name = contacts[0].get("profile", {}).get("name", "")
+
+                    if not rate_limiter.is_allowed(sender):
+                        logger.warning("Rate limited: %s", sender)
+                        await send_text(sender, _RATE_LIMIT_MSG)
+                        continue
 
                     logger.info(
                         "Message from %s (%s): type=%s",
