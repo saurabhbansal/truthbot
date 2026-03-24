@@ -20,6 +20,14 @@ from app.utils.logger import get_logger
 logger = get_logger("engines.link")
 
 URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
+SOCIAL_DOMAINS = {
+    "facebook.com",
+    "m.facebook.com",
+    "instagram.com",
+    "x.com",
+    "twitter.com",
+    "tiktok.com",
+}
 
 
 def extract_urls(text: str) -> list[str]:
@@ -107,7 +115,8 @@ async def _extract_article(url: str) -> str:
 
         results = response.get("results", [])
         if results:
-            return results[0].get("raw_content", "")[:3000]
+            raw_content = results[0].get("raw_content", "")
+            return _clean_extracted_content(url, raw_content)[:3000]
         return ""
 
     except Exception:
@@ -120,3 +129,103 @@ def _extract_domain(url: str) -> str:
         return urlparse(url).netloc.lower().removeprefix("www.")
     except Exception:
         return ""
+
+
+def _clean_extracted_content(url: str, raw_content: str) -> str:
+    if not raw_content:
+        return ""
+
+    domain = _extract_domain(url)
+    text = raw_content
+
+    # Remove embedded markdown image/data blobs that often appear in social extracts.
+    text = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", text)
+    text = re.sub(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+", "", text)
+
+    if _is_social_domain(domain):
+        text = _extract_social_post_text(text)
+
+    # Final cleanup for all links.
+    cleaned_lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        low = line.lower()
+        if (
+            "%3csvg" in low
+            or "%3e%3cpath" in low
+            or "data:image/svg+xml" in low
+            or "viewbox=" in low
+            or "xmlns=" in low
+            or "fill='url(" in low
+        ):
+            continue
+        if re.fullmatch(r"[0-9.,kmb\\s:]+", low):
+            continue
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines)
+
+
+def _is_social_domain(domain: str) -> bool:
+    return domain in SOCIAL_DOMAINS
+
+
+def _extract_social_post_text(text: str) -> str:
+    """Extract likely author-post text and stop before comments/UI noise."""
+    lines = [ln.strip() for ln in text.splitlines()]
+    kept: list[str] = []
+    started = False
+
+    stop_markers = (
+        "comment",
+        "comments",
+        "reply",
+        "replies",
+        "share",
+        "shares",
+        "reaction",
+        "reactions",
+        "all reactions",
+        "most relevant",
+        "top comments",
+        "view more comments",
+        "view more replies",
+        "like",
+        "likes",
+    )
+
+    for line in lines:
+        if not line:
+            continue
+
+        lower = line.lower()
+
+        # Skip page scaffolding.
+        if lower.startswith("## ") or lower.startswith("### ") or line == "---":
+            continue
+        if lower.startswith("[") and "](" in line and "·" in line:
+            # Often the date/timestamp line.
+            started = True
+            continue
+        if line.startswith("!["):
+            break
+
+        if any(marker in lower for marker in stop_markers):
+            break
+        if "<svg" in lower or "data:image/svg+xml" in lower:
+            break
+
+        # Skip profile-name link lines before content starts.
+        if not started and line.startswith("[**") and "](" in line:
+            started = True
+            continue
+
+        if started or len(line.split()) > 4:
+            kept.append(line)
+            started = True
+
+    return "\n".join(kept)

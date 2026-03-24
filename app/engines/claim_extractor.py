@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from openai import AsyncOpenAI
 
@@ -22,7 +23,7 @@ Rules:
 - Do NOT reframe or editorialize claims. Extract them as stated, even if they seem absurd or offensive
 - If the text contains no verifiable claims, return an empty claims list
 - Return claims in the language they appear in (if Hindi, keep Hindi)
-- Maximum 5 claims per message
+- Maximum 12 claims per message
 - Even simple health claims like "X cures Y" are verifiable claims — extract them
 - Opinions ("Modi is the best PM") are NOT verifiable — skip them. But factual claims embedded in opinions ("Modi built 10 million houses") ARE verifiable — extract the factual part only
 
@@ -33,6 +34,17 @@ Example: {{"claims": ["NASA discovered a second moon orbiting Earth", "The disco
 If no verifiable claims found: {{"claims": []}}
 
 TEXT TO ANALYZE:
+{text}"""
+
+TRANSLATION_PROMPT = """Translate the following factual claim to clear, plain English.
+
+Rules:
+- Preserve meaning exactly (no added/removed facts).
+- Keep names, numbers, dates, units, and quoted phrases unchanged.
+- If the text is already English, return it unchanged.
+- Return only the translated sentence.
+
+CLAIM:
 {text}"""
 
 
@@ -46,7 +58,7 @@ async def extract_claims(text: str) -> list[str]:
                 {"role": "user", "content": EXTRACTION_PROMPT.format(text=text)},
             ],
             temperature=0.1,
-            max_tokens=500,
+            max_tokens=1000,
             response_format={"type": "json_object"},
         )
 
@@ -60,10 +72,71 @@ async def extract_claims(text: str) -> list[str]:
         else:
             claims = []
 
-        claims = [str(c).strip() for c in claims if c][:5]
+        claims = [str(c).strip() for c in claims if c][:12]
         logger.info("Extracted %d claims from text (%d chars)", len(claims), len(text))
         return claims
 
     except Exception:
         logger.exception("Claim extraction failed")
         return [text[:500]]
+
+
+def filter_grounded_claims(source_text: str, claims: list[str]) -> list[str]:
+    """Keep only claims that are grounded in the provided source text."""
+    if not source_text or not claims:
+        return []
+
+    normalized_source = _normalize_for_match(source_text)
+    source_tokens = set(normalized_source.split())
+
+    grounded: list[str] = []
+    for claim in claims:
+        normalized_claim = _normalize_for_match(claim)
+        if not normalized_claim:
+            continue
+
+        # Strong match: claim text appears in source after normalization.
+        if normalized_claim in normalized_source:
+            grounded.append(claim)
+            continue
+
+        # Fallback: high token overlap for minor punctuation/spacing differences.
+        claim_tokens = normalized_claim.split()
+        if len(claim_tokens) < 5:
+            continue
+
+        overlap = sum(1 for t in claim_tokens if t in source_tokens)
+        overlap_ratio = overlap / len(claim_tokens)
+        if overlap_ratio >= 0.85:
+            grounded.append(claim)
+
+    return grounded
+
+
+def _normalize_for_match(text: str) -> str:
+    text = text.lower()
+    # Keep Unicode letters/numbers so non-English scripts still match.
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+async def translate_claim_to_english(text: str) -> str:
+    """Translate a claim to English for consistent source searching."""
+    if not text.strip():
+        return text
+    try:
+        response = await _client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": "You translate claims to English exactly."},
+                {"role": "user", "content": TRANSLATION_PROMPT.format(text=text)},
+            ],
+            temperature=0,
+            max_tokens=300,
+        )
+        translated = (response.choices[0].message.content or "").strip()
+        return translated or text
+    except Exception:
+        logger.exception("Claim translation failed")
+        return text

@@ -81,7 +81,7 @@ def format_multi_verdict(verdicts: list[Verdict]) -> str:
 
     for i, v in enumerate(verdicts, 1):
         emoji = VERDICT_EMOJI.get(v.label, "❓")
-        parts.append(f"*Claim {i}:* _{v.claim[:80]}_")
+        parts.append(f"*Claim {i}:* _{v.claim}_")
         parts.append(f"{emoji} *{v.label.value}* — {v.summary}")
         if v.partial_truth_pattern:
             parts.append(f"   ↳ {v.partial_truth_pattern[:120]}")

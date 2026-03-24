@@ -8,6 +8,7 @@ Usage:
 
 Commands:
     text <message>     - Fact-check a text claim
+    textfile <path>    - Fact-check text from a file (best for long forwards)
     link <url>         - Fact-check a link
     image <path>       - Analyze a local image file
     video <path>       - Analyze a local video file
@@ -47,7 +48,7 @@ Hey there! I'm TruthBot 🔍
 I help you check if messages, images, links, and videos are real or fake.
 
 HOW TO USE ME:
-Just forward me anything you want checked! That's it.
+Just forward or send me anything you want checked! That's it.
 
 I can check:
 • Text messages & chain forwards
@@ -61,7 +62,7 @@ Try it now — forward me something from your groups!
 HELP = """
 Here's how I can help:
 
-FORWARD me any:
+SEND or FORWARD me any:
 • Text message or chain forward
 • Image or screenshot
 • News link or article URL
@@ -99,6 +100,26 @@ async def handle_text(text: str) -> None:
     print_bot(message)
     print_info(f"[{elapsed:.1f}s | {len(verdicts)} verdict(s)]")
     await log_usage("cli_test", "text", verdicts[0].label.value if verdicts else "", 0, int(elapsed * 1000))
+
+
+async def handle_text_file(path: str) -> None:
+    clean_path = path.strip().strip("\"'")
+    file_path = Path(clean_path)
+    if not file_path.exists():
+        print_error(f"File not found: {path}")
+        return
+    try:
+        text = file_path.read_text(encoding="utf-8")
+    except Exception as e:
+        print_error(f"Couldn't read file: {e}")
+        return
+
+    if not text.strip():
+        print_error("File is empty.")
+        return
+
+    print_info(f"Loaded text from {file_path.name} ({len(text)} chars)")
+    await handle_text(text)
 
 
 async def handle_link(url: str) -> None:
@@ -166,6 +187,7 @@ async def main() -> None:
     print(f"""
   Commands:
     {BLUE}text{RESET} <message>     Fact-check a text claim
+    {BLUE}textfile{RESET} <path>    Fact-check text from a file
     {BLUE}link{RESET} <url>         Fact-check a link
     {BLUE}image{RESET} <path>       Analyze a local image file
     {BLUE}video{RESET} <path>       Analyze a local video file
@@ -198,6 +220,8 @@ async def main() -> None:
             await handle_stats()
         elif lower.startswith("text "):
             await handle_text(raw[5:].strip())
+        elif lower.startswith("textfile "):
+            await handle_text_file(raw[9:].strip())
         elif lower.startswith("link "):
             await handle_link(raw[5:].strip())
         elif lower.startswith("image "):
