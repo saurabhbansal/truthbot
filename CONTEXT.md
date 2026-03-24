@@ -198,6 +198,152 @@ truthbot/
 
 ---
 
+## 5 Partial-Truth Patterns (Critical for Verdict Quality)
+
+These are the most important scenarios TruthBot handles. Outright false is easy -- partial truths are what slip through family groups.
+
+| Pattern | Label | What's Happening | Example |
+|---------|-------|-----------------|---------|
+| **A** | MISLEADING | True fact + false conclusion drawn from it | "Harvard study proves turmeric kills cancer cells. Stop chemo and use turmeric!" (study is real, conclusion is dangerous) |
+| **B** | MOSTLY FALSE | Right topic, wrong numbers/details exaggerated | "India's GDP grew 15% this quarter!" (real growth is ~6.5%) |
+| **C** | OUTDATED | Was true before, no longer current | "WHO declares COVID global health emergency!" (ended May 2023) |
+| **D** | MISSING CONTEXT | True stats but framed to mislead | "Crime rate up 200% in City X!" (because new online reporting system launched, not more crime) |
+| **E** | OUT OF CONTEXT | Real media, fake caption/wrong attribution | Real flood photo from Bangladesh 2024 captioned "Terrible floods in Chennai today!" |
+
+For every partial-truth verdict, TruthBot always shows both sides: "What's TRUE" and "What's FALSE/WRONG/MISSING" — this builds trust because users see TruthBot acknowledges the true parts.
+
+---
+
+## All UI Scenarios
+
+| # | Scenario | Content Type | MVP? | What TruthBot Does |
+|---|----------|-------------|------|-------------------|
+| 1 | User sends "hi"/"hello"/"namaste" | Text | Yes | Onboarding message with instructions |
+| 2 | User sends "help" | Text | Yes | Tips and usage guide |
+| 3 | User forwards a text claim | Text | Yes | Claim extraction → 4-layer search → verdict |
+| 4 | User forwards text with URL | Text+Link | Yes | Domain classification → article extraction → fact-check |
+| 5 | User forwards an image | Image | Yes | OCR + AI detection (Hive) + text pipeline |
+| 6 | User forwards a video | Video | Yes | Hive deepfake detection + caption pipeline |
+| 7 | User sends audio/voice note | Audio | No | "Coming soon" message with suggestion to type the claim |
+| 8 | User sends a document | Document | No | "Can't check documents yet" message |
+| 9 | User sends sticker/contact/location | Other | No | "Can't check those" message |
+| 10 | User sends random conversational text | Text | Yes | Redirect to fact-checking purpose |
+| 11 | Verdict has multiple claims | Text | Yes | Multi-claim format with per-claim verdicts |
+| 12 | Verdict is partial truth | Text | Yes | "What's TRUE vs What's WRONG" breakdown |
+| 13 | User uploads image from device | Image | Yes | Same as forwarded image (WhatsApp API treats identically) |
+| 14 | User uploads video from device | Video | Yes | Same as forwarded video |
+| 15 | Image with caption | Image+Text | Yes | AI detection + OCR + caption fact-check combined |
+| 16 | Video with caption | Video+Text | Yes | Deepfake detection + caption fact-check combined |
+| 17 | Feedback: user taps "Helpful" | Interactive | Yes | Thank you + log positive feedback |
+| 18 | Feedback: user taps "Not Helpful" | Interactive | Yes | Follow-up reason list → log |
+| 19 | Feedback: user taps "Wrong" | Interactive | Yes | Ask for correct source link → log |
+| 20 | Rate limited user | Any | Yes | "Slow down" message (5 req/min) |
+
+---
+
+## Cost Estimate (Monthly, for ~50 users)
+
+| Service | Free Tier | Estimated Monthly Cost |
+|---------|-----------|----------------------|
+| WhatsApp Cloud API | 1,000 conversations/month free | $0 (family use stays within free tier) |
+| OpenAI GPT-4o-mini | Pay per token | ~$2-5 (claim extraction + verdict reasoning) |
+| Tavily API | 1,000 searches/month free | $0-5 (depends on usage) |
+| Google Fact Check API | Free | $0 |
+| Google Cloud Vision (OCR) | 1,000 images/month free | $0 |
+| Hive Moderation | Free credits on signup | $0-3 (depends on image/video volume) |
+| Railway hosting | $5/month starter | $5 |
+| **Total** | | **~$7-18/month** |
+
+---
+
+## WhatsApp Cloud API Setup (Step-by-Step)
+
+This is the detailed guide for when the spare phone number is available.
+
+### PART A: Meta Account & Developer App (done)
+- Meta Business portfolio "Fact Fury" created
+- Developer app "TruthBot" created at developers.facebook.com
+- WhatsApp product added to the app
+- Test phone number available: +1 555 155 4793
+- Phone Number ID: 104422784189684400
+- Business Account ID: 206118288133354
+
+### PART B: Register Spare Phone Number (PENDING — blocker)
+1. Go to Meta Developer Console → Your App → WhatsApp → API Setup
+2. Click "Add phone number"
+3. Enter the spare phone number (must NOT be registered on WhatsApp already)
+4. Choose verification method: SMS or Voice call
+5. Enter the OTP received on the spare SIM
+6. Once verified, the phone number becomes TruthBot's number
+
+### PART C: Generate Permanent Access Token
+1. Go to Meta Developer Console → Your App → WhatsApp → API Setup
+2. The temporary token (24h) is already generated
+3. For a permanent token: Business Settings → System Users → Create system user → Generate token with `whatsapp_business_messaging` permission
+4. Update `.env` with the permanent token
+
+### PART D: Deploy to Railway
+1. Go to railway.app and connect your GitHub repo
+2. Railway auto-detects the Dockerfile
+3. Set all environment variables from `.env` in Railway's dashboard
+4. Deploy — Railway gives you a URL like `https://truthbot-production-xxxx.up.railway.app`
+
+### PART E: Set Webhook URL
+1. Go to Meta Developer Console → Your App → WhatsApp → Configuration
+2. Set Webhook URL: `https://<railway-url>/webhook`
+3. Set Verify Token: same value as `WHATSAPP_VERIFY_TOKEN` in `.env`
+4. Subscribe to messages: check `messages` field
+5. Meta will send a GET request to verify — the server must be running
+
+### PART F: Test End-to-End
+1. Send "hi" from your personal WhatsApp to TruthBot's number
+2. You should get the onboarding message back
+3. Forward a suspicious message — you should get a verdict
+4. If it works, share TruthBot's number with family
+
+---
+
+## Rollout Strategy
+
+### Phase 1: Personal Testing (you only)
+- Test all content types: text, image, video, link
+- Test edge cases: Hindi text, very long messages, multiple URLs
+- Test error handling: send unsupported content, rapid-fire messages
+
+### Phase 2: Inner Circle (3-5 trusted people)
+- Share with tech-savvy family members who can give good feedback
+- Monitor logs and feedback database
+- Tune prompts based on real-world claims
+
+### Phase 3: Family Rollout (10-30 people)
+- Share the GUIDE.md instructions
+- Share TruthBot's number in family groups
+- Message: "Hey everyone, I built a bot that checks if forwarded messages are real or fake. Save this number and forward anything suspicious to it!"
+- Monitor usage stats via `/stats` endpoint
+
+### Phase 4: Iterate
+- Review feedback weekly
+- Add Hindi responses if family requests it
+- Expand allowlists based on Indian sources that come up frequently
+- Tune prompts based on patterns in wrong verdicts
+
+---
+
+## Future Roadmap (Not Started)
+
+| Feature | Effort | Priority | Notes |
+|---------|--------|----------|-------|
+| Hindi responses | Low | High | LLMs generate Hindi natively; just add language detection + prompt tweak |
+| Audio/voice note checking | Medium | Medium | Need speech-to-text (Whisper API) → then route through text pipeline |
+| Group chat @mention | High | Low | Requires WhatsApp Business API group features; complex permissions |
+| Reverse image search | Medium | Medium | Google Lens API or TinEye for out-of-context image detection |
+| Automated bias testing | Medium | Medium | Run same claim from both political sides, compare tone/harshness |
+| Advanced feedback validation | Medium | Low | Consensus scoring, user track record, category patterns |
+| Multi-language support | Low per language | Low | Add language detection, translate claims, respond in detected language |
+| Admin dashboard | Medium | Low | Web UI showing usage stats, feedback trends, verdict distribution |
+
+---
+
 ## What's Built (Complete)
 
 - [x] Phase 0: Project structure, FastAPI skeleton, Dockerfile, GitHub repo
