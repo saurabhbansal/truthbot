@@ -17,32 +17,35 @@ VERDICT_EMOJI = {
     VerdictLabel.AI_GENERATED: "🤖",
 }
 
-CONFIDENCE_EMOJI = {
-    "high": "🟢",
-    "medium": "🟡",
-    "low": "🔴",
-}
+LOW_CONFIDENCE_TIP = (
+    "\n\n💡 _I found limited sources on this, so take this with a pinch of salt. "
+    "If you have more context, send it and I'll re-check!_"
+)
 
-CONFIDENCE_TEXT = {
-    "high": "High confidence",
-    "medium": "Medium confidence — take with a pinch of salt",
-    "low": "Low confidence — limited sources available",
-}
+MEDIUM_CONFIDENCE_TIP = (
+    "\n\n💡 _I found some sources but not as many as I'd like. "
+    "Check the sources below before sharing._"
+)
+
+
+def _confidence_tip(verdict: Verdict) -> str:
+    """Return a contextual tip based on confidence level, or empty string for high confidence."""
+    tier = confidence_tier(verdict.confidence)
+    if tier == "low":
+        return LOW_CONFIDENCE_TIP
+    if tier == "medium":
+        return MEDIUM_CONFIDENCE_TIP
+    return ""
 
 
 def format_verdict(verdict: Verdict) -> str:
     """Format a single verdict into a WhatsApp message."""
     emoji = VERDICT_EMOJI.get(verdict.label, "❓")
-    tier = confidence_tier(verdict.confidence)
-    conf_emoji = CONFIDENCE_EMOJI.get(tier, "🔴")
-    conf_text = CONFIDENCE_TEXT.get(tier, "")
 
     parts = [
         f"{emoji} *{verdict.label.value}*",
         "",
         verdict.summary,
-        "",
-        f"{conf_emoji} _{conf_text}_",
     ]
 
     if verdict.explanation:
@@ -54,6 +57,10 @@ def format_verdict(verdict: Verdict) -> str:
             "📋 *What's true vs. what's not:*",
             verdict.partial_truth_pattern,
         ])
+
+    tip = _confidence_tip(verdict)
+    if tip:
+        parts.append(tip)
 
     if verdict.sources:
         parts.append("")
@@ -78,6 +85,19 @@ def format_multi_verdict(verdicts: list[Verdict]) -> str:
         parts.append(f"{emoji} *{v.label.value}* — {v.summary}")
         if v.partial_truth_pattern:
             parts.append(f"   ↳ {v.partial_truth_pattern[:120]}")
+        parts.append("")
+
+    any_low = any(confidence_tier(v.confidence) == "low" for v in verdicts)
+    any_medium = any(confidence_tier(v.confidence) == "medium" for v in verdicts)
+    if any_low:
+        parts.append(
+            "💡 _Some of these had limited sources — check the links below before sharing._"
+        )
+        parts.append("")
+    elif any_medium:
+        parts.append(
+            "💡 _Check the sources below before sharing._"
+        )
         parts.append("")
 
     all_sources = []

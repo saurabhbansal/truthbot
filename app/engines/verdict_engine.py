@@ -85,8 +85,8 @@ VERDICT_PROMPT = """You are TruthBot, a fact-checking assistant. You must produc
 {{
     "label": "one of the labels above",
     "confidence": 0.0 to 1.0,
-    "summary": "One-sentence verdict (friendly tone, max 100 chars)",
-    "explanation": "2-3 sentence explanation with specific source citations",
+    "summary": "One-sentence verdict that explains WHAT is true or false (not just 'This is false'). Be specific. Examples: 'Ginger water does not cure bloating.', 'India's population is about 1.4 billion, not 3 billion.', 'No such RBI announcement was made.' For medium confidence, soften: 'This likely isn't true.' For low confidence: 'I couldn't find evidence to support this.' Max 100 chars.",
+    "explanation": "2-3 sentence explanation with specific source citations. Use confident language when sources are strong, hedged language when sources are limited.",
     "partial_truth_pattern": "if MISLEADING/MOSTLY FALSE/OUTDATED/MISSING CONTEXT/OUT OF CONTEXT, explain what part is true and what part is false/misleading",
     "cited_sources": ["url1", "url2"]
 }}"""
