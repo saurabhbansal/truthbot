@@ -38,6 +38,16 @@ def _confidence_tip(verdict: Verdict) -> str:
     return ""
 
 
+def _source_title(src: dict) -> str:
+    """Safely extract a display title from a source dict."""
+    return str(src.get("title", src.get("domain", "Source")))[:60]
+
+
+def _source_url(src: dict) -> str:
+    """Safely extract URL from a source dict."""
+    return str(src.get("url", ""))
+
+
 def format_verdict(verdict: Verdict) -> str:
     """Format a single verdict into a WhatsApp message."""
     emoji = VERDICT_EMOJI.get(verdict.label, "❓")
@@ -66,8 +76,10 @@ def format_verdict(verdict: Verdict) -> str:
         parts.append("")
         parts.append("📎 *Sources:*")
         for i, src in enumerate(verdict.sources[:3], 1):
-            parts.append(f"{i}. {src['title'][:60]}")
-            parts.append(f"   {src['url']}")
+            parts.append(f"{i}. {_source_title(src)}")
+            url = _source_url(src)
+            if url:
+                parts.append(f"   {url}")
 
     return "\n".join(parts)
 
@@ -83,8 +95,10 @@ def format_multi_verdict(verdicts: list[Verdict]) -> str:
         emoji = VERDICT_EMOJI.get(v.label, "❓")
         parts.append(f"*Claim {i}:* _{v.claim}_")
         parts.append(f"{emoji} *{v.label.value}* — {v.summary}")
+        if v.explanation:
+            parts.extend(["", v.explanation])
         if v.partial_truth_pattern:
-            parts.append(f"   ↳ {v.partial_truth_pattern[:120]}")
+            parts.append(f"   ↳ {v.partial_truth_pattern[:200]}")
         parts.append("")
 
     any_low = any(confidence_tier(v.confidence) == "low" for v in verdicts)
@@ -100,18 +114,40 @@ def format_multi_verdict(verdicts: list[Verdict]) -> str:
         )
         parts.append("")
 
-    all_sources = []
+    false_count = sum(1 for v in verdicts if v.label in (VerdictLabel.FALSE, VerdictLabel.MOSTLY_FALSE))
+    true_count = sum(1 for v in verdicts if v.label == VerdictLabel.TRUE)
+    total = len(verdicts)
+
+    if total > 1:
+        synthesis_parts: list[str] = []
+        if false_count == total:
+            synthesis_parts.append("📊 *Overall:* None of the claims in this message are supported by evidence.")
+        elif true_count == total:
+            synthesis_parts.append("📊 *Overall:* All claims in this message are supported by evidence.")
+        elif false_count > 0 or true_count > 0:
+            synthesis_parts.append(
+                f"📊 *Overall:* Of {total} claims checked, "
+                f"{true_count} supported and {false_count} not supported by evidence."
+            )
+        if synthesis_parts:
+            parts.extend(synthesis_parts)
+            parts.append("")
+
+    all_sources: list[dict] = []
     seen_urls: set[str] = set()
     for v in verdicts:
         for src in v.sources:
-            if src["url"] not in seen_urls:
+            url = _source_url(src)
+            if url and url not in seen_urls:
                 all_sources.append(src)
-                seen_urls.add(src["url"])
+                seen_urls.add(url)
 
     if all_sources:
         parts.append("📎 *Sources:*")
         for i, src in enumerate(all_sources[:5], 1):
-            parts.append(f"{i}. {src['title'][:60]}")
-            parts.append(f"   {src['url']}")
+            parts.append(f"{i}. {_source_title(src)}")
+            url = _source_url(src)
+            if url:
+                parts.append(f"   {url}")
 
     return "\n".join(parts)

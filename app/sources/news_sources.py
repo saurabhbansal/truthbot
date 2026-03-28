@@ -28,8 +28,8 @@ async def search_news(claim: str) -> list[NewsSourceResult]:
         client = AsyncTavilyClient(api_key=TAVILY_API_KEY)
         response = await client.search(
             query=claim,
-            search_depth="advanced",
-            include_domains=list(ALL_NEWS_DOMAINS)[:20],
+            search_depth="basic",
+            include_domains=sorted(ALL_NEWS_DOMAINS)[:20],
             max_results=5,
         )
 

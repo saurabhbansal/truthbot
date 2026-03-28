@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+
 from fastapi import APIRouter, Query, Request, Response
 
-from app.config import WHATSAPP_VERIFY_TOKEN
+from app.config import META_APP_SECRET, WHATSAPP_VERIFY_TOKEN
 from app.router.content_router import route_message
 from app.utils.logger import get_logger
 from app.utils.rate_limiter import rate_limiter
@@ -13,9 +16,21 @@ logger = get_logger("webhook")
 router = APIRouter()
 
 _RATE_LIMIT_MSG = (
-    "Whoa, slow down! 😅 You're sending messages faster than I can check them.\n\n"
+    "Whoa, slow down! You're sending messages faster than I can check them.\n\n"
     "Please wait a minute and try again."
 )
+
+
+def _verify_signature(payload: bytes, signature_header: str) -> bool:
+    """Verify the X-Hub-Signature-256 HMAC from Meta."""
+    if not META_APP_SECRET:
+        return True
+    if not signature_header:
+        return False
+    expected = "sha256=" + hmac.new(
+        META_APP_SECRET.encode(), payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature_header)
 
 
 @router.get("")
@@ -35,6 +50,13 @@ async def verify(
 @router.post("")
 async def receive(request: Request) -> dict:
     """Receive incoming WhatsApp messages."""
+    raw_body = await request.body()
+
+    sig = request.headers.get("X-Hub-Signature-256", "")
+    if not _verify_signature(raw_body, sig):
+        logger.warning("Webhook signature verification failed")
+        return {"status": "error", "message": "invalid signature"}
+
     body = await request.json()
     logger.debug("Incoming webhook payload: %s", body)
 
@@ -53,7 +75,6 @@ async def receive(request: Request) -> dict:
 
                     if not rate_limiter.is_allowed(sender):
                         logger.warning("Rate limited: %s", sender)
-                        await send_text(sender, _RATE_LIMIT_MSG)
                         continue
 
                     logger.info(

@@ -37,7 +37,15 @@ async def search_claims(query: str, language: str = "en") -> list[FactCheckResul
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(GOOGLE_FACT_CHECK_URL, params=params)
-            data = resp.json()
+
+        if resp.status_code != 200:
+            logger.error("Fact Check API HTTP %d: %s", resp.status_code, resp.text[:200])
+            return []
+
+        data = resp.json()
+        if "error" in data:
+            logger.error("Fact Check API error: %s", data["error"])
+            return []
 
         results: list[FactCheckResult] = []
         for claim in data.get("claims", []):

@@ -14,6 +14,8 @@ logger = get_logger("engines.claims")
 
 _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
+MAX_INPUT_LENGTH = 8000
+
 EXTRACTION_PROMPT = """You are a claim extraction specialist. Your job is to identify specific, verifiable factual claims from the given text.
 
 Rules:
@@ -50,6 +52,10 @@ CLAIM:
 
 async def extract_claims(text: str) -> list[str]:
     """Extract verifiable factual claims from text using LLM."""
+    if len(text) > MAX_INPUT_LENGTH:
+        logger.warning("Input text truncated from %d to %d chars", len(text), MAX_INPUT_LENGTH)
+        text = text[:MAX_INPUT_LENGTH]
+
     try:
         response = await _client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -78,13 +84,17 @@ async def extract_claims(text: str) -> list[str]:
 
     except Exception:
         logger.exception("Claim extraction failed")
-        return [text[:500]]
+        return []
 
 
 def filter_grounded_claims(source_text: str, claims: list[str]) -> list[str]:
-    """Keep only claims that are grounded in the provided source text."""
+    """Keep only claims that are grounded in the provided source text.
+
+    Uses a relaxed matching threshold (70% token overlap) to avoid
+    discarding legitimate claims that the LLM paraphrased slightly.
+    """
     if not source_text or not claims:
-        return []
+        return claims
 
     normalized_source = _normalize_for_match(source_text)
     source_tokens = set(normalized_source.split())
@@ -95,27 +105,32 @@ def filter_grounded_claims(source_text: str, claims: list[str]) -> list[str]:
         if not normalized_claim:
             continue
 
-        # Strong match: claim text appears in source after normalization.
         if normalized_claim in normalized_source:
             grounded.append(claim)
             continue
 
-        # Fallback: high token overlap for minor punctuation/spacing differences.
         claim_tokens = normalized_claim.split()
-        if len(claim_tokens) < 5:
+        if len(claim_tokens) < 3:
+            grounded.append(claim)
             continue
 
         overlap = sum(1 for t in claim_tokens if t in source_tokens)
         overlap_ratio = overlap / len(claim_tokens)
-        if overlap_ratio >= 0.85:
+        if overlap_ratio >= 0.70:
             grounded.append(claim)
+
+    if not grounded and claims:
+        logger.warning(
+            "Grounding filter dropped all %d claims — returning originals as fallback",
+            len(claims),
+        )
+        return claims
 
     return grounded
 
 
 def _normalize_for_match(text: str) -> str:
     text = text.lower()
-    # Keep Unicode letters/numbers so non-English scripts still match.
     text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
     text = re.sub(r"\s+", " ", text).strip()
     return text

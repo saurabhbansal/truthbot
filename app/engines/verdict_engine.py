@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
 
-from app.config import OPENAI_API_KEY, OPENAI_MODEL
+from app.config import OPENAI_API_KEY, OPENAI_VERDICT_MODEL
 from app.sources.source_trust import SourceEvidence
 from app.verdict.confidence import VerdictLabel
 from app.utils.logger import get_logger
@@ -95,23 +95,23 @@ VERDICT_PROMPT = """You are TruthBot, a fact-checking assistant. You must produc
 {{
     "label": "one of the labels above",
     "confidence": 0.0 to 1.0,
-    "summary": "One-sentence verdict that explains WHAT is true or false (not just 'This is false'). Be specific. Examples: 'Ginger water does not cure bloating.', 'India's population is about 1.4 billion, not 3 billion.', 'No such RBI announcement was made.' For medium confidence, soften: 'This likely isn't true.' For low confidence: 'I couldn't find evidence to support this.' Max 100 chars.",
-    "explanation": "2-3 sentence explanation with specific source citations. Use confident language when sources are strong, hedged language when sources are limited.",
-    "partial_truth_pattern": "if MISLEADING/MOSTLY FALSE/OUTDATED/MISSING CONTEXT/OUT OF CONTEXT, explain what part is true and what part is false/misleading",
+    "summary": "1-2 sentence verdict that explains WHAT is true or false and WHY. Be specific — name the actual facts. Examples: 'India's GDP grew 6.7% in Q3 2025, not 15% as claimed, according to the Ministry of Statistics.', 'No RBI circular or press release announces this policy change.'",
+    "explanation": "Comprehensive explanation with specific source citations. Walk through the evidence: what each source says, how it relates to the claim, and why the verdict follows. Include relevant context, numbers, dates, and counterpoints. Use confident language when sources are strong, hedged language when sources are limited. No length limit — be as thorough as needed.",
+    "partial_truth_pattern": "if MISLEADING/MOSTLY FALSE/OUTDATED/MISSING CONTEXT/OUT OF CONTEXT, explain what part is true and what part is false/misleading in detail",
     "cited_sources": ["url1", "url2"]
 }}"""
 
 
 async def produce_verdict(claim: str, evidence: SourceEvidence) -> Verdict:
     """Reason over evidence and produce a verdict for a claim."""
-    fact_check_text = _format_fact_checks(evidence)
+    fc_text = _format_fact_checks(evidence)
     official_text = _format_official(evidence)
     news_text = _format_news(evidence)
     web_text = _format_web(evidence)
 
     prompt = VERDICT_PROMPT.format(
         claim=claim,
-        fact_check_evidence=fact_check_text or "No fact-check results found.",
+        fact_check_evidence=fc_text or "No fact-check results found.",
         official_evidence=official_text or "No official source results found.",
         news_evidence=news_text or "No news coverage found.",
         web_evidence=web_text or "No general web results found.",
@@ -122,7 +122,7 @@ async def produce_verdict(claim: str, evidence: SourceEvidence) -> Verdict:
 
     try:
         response = await _client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=OPENAI_VERDICT_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -132,13 +132,13 @@ async def produce_verdict(claim: str, evidence: SourceEvidence) -> Verdict:
                         "Be decisive — if evidence points toward false, say FALSE. "
                         "Only say UNVERIFIED for truly obscure claims with zero related information. "
                         "Never editorialize, never take sides, never praise or criticize any entity. "
-                        "State facts only."
+                        "State facts only. Provide thorough, well-reasoned explanations."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=800,
+            max_tokens=2500,
             response_format={"type": "json_object"},
         )
 
@@ -151,7 +151,12 @@ async def produce_verdict(claim: str, evidence: SourceEvidence) -> Verdict:
         except ValueError:
             label = VerdictLabel.UNVERIFIED
 
-        llm_confidence = float(data.get("confidence", 0.5))
+        try:
+            llm_confidence = float(data.get("confidence", 0.5))
+        except (ValueError, TypeError):
+            llm_confidence = 0.5
+        llm_confidence = max(0.0, min(1.0, llm_confidence))
+
         final_confidence = _calibrate_confidence(llm_confidence, evidence.confidence)
 
         verdict = Verdict(
@@ -203,19 +208,19 @@ def _format_fact_checks(evidence: SourceEvidence) -> str:
 def _format_official(evidence: SourceEvidence) -> str:
     lines = []
     for r in evidence.official_results:
-        lines.append(f"- [{r.domain}] {r.title} | URL: {r.url}\n  Content: {r.content[:300]}")
+        lines.append(f"- [{r.domain}] {r.title} | URL: {r.url}\n  Content: {r.content[:800]}")
     return "\n".join(lines)
 
 
 def _format_news(evidence: SourceEvidence) -> str:
     lines = []
     for r in evidence.news_results:
-        lines.append(f"- [{r.domain}] {r.title} | URL: {r.url}\n  Content: {r.content[:300]}")
+        lines.append(f"- [{r.domain}] {r.title} | URL: {r.url}\n  Content: {r.content[:800]}")
     return "\n".join(lines)
 
 
 def _format_web(evidence: SourceEvidence) -> str:
     lines = []
     for r in evidence.web_results:
-        lines.append(f"- [{r.domain}] {r.title} | URL: {r.url}\n  Content: {r.content[:200]}")
+        lines.append(f"- [{r.domain}] {r.title} | URL: {r.url}\n  Content: {r.content[:500]}")
     return "\n".join(lines)

@@ -16,6 +16,7 @@ from app.feedback.feedback_handler import (
     send_feedback_buttons,
 )
 from app.config import MAX_IMAGE_SIZE, MAX_VIDEO_SIZE
+from app.db.usage import check_daily_limit, record_usage
 from app.utils.logger import get_logger
 from app.whatsapp.media import download_media
 from app.whatsapp.sender import send_text
@@ -117,6 +118,12 @@ async def _handle_text(sender: str, sender_name: str, message: dict) -> None:
         await _handle_link(sender, sender_name, text_body)
         return
 
+    allowed, reason = await check_daily_limit(sender, "text")
+    if not allowed:
+        await send_text(sender, reason)
+        return
+
+    await record_usage(sender, "text")
     await send_text(sender, "Got it! Checking this now... ⏳\n(usually takes 5-10 seconds)")
 
     try:
@@ -143,10 +150,16 @@ async def _handle_image(sender: str, sender_name: str, message: dict) -> None:
     caption = image_data.get("caption", "")
     media_id = image_data.get("id", "")
 
+    allowed, reason = await check_daily_limit(sender, "image")
+    if not allowed:
+        await send_text(sender, reason)
+        return
+
+    await record_usage(sender, "image")
     await send_text(sender, "Got your image! Analyzing it... 🔍\n(this may take 10-15 seconds)")
 
     try:
-        image_bytes = await download_media(media_id, max_size=MAX_IMAGE_SIZE)
+        image_bytes = await download_media(media_id, max_size=MAX_IMAGE_SIZE, expected_type="image")
         if not image_bytes:
             await send_text(sender, "Sorry, I couldn't download the image. It may be too large (max 10MB) or unavailable. Try sending it again?")
             return
@@ -173,6 +186,12 @@ async def _handle_video(sender: str, sender_name: str, message: dict) -> None:
     caption = video_data.get("caption", "")
     media_id = video_data.get("id", "")
 
+    allowed, reason = await check_daily_limit(sender, "video")
+    if not allowed:
+        await send_text(sender, reason)
+        return
+
+    await record_usage(sender, "video")
     await send_text(
         sender,
         "Got your video! This takes a bit longer to analyze — "
@@ -180,7 +199,7 @@ async def _handle_video(sender: str, sender_name: str, message: dict) -> None:
     )
 
     try:
-        video_bytes = await download_media(media_id, max_size=MAX_VIDEO_SIZE)
+        video_bytes = await download_media(media_id, max_size=MAX_VIDEO_SIZE, expected_type="video")
         if not video_bytes:
             await send_text(sender, "Sorry, I couldn't download the video. It may be too large (max 16MB) or unavailable. Try sending it again?")
             return
@@ -208,6 +227,12 @@ async def _handle_link(sender: str, sender_name: str, text: str) -> None:
         await send_text(sender, _REDIRECT_MSG)
         return
 
+    allowed, reason = await check_daily_limit(sender, "link")
+    if not allowed:
+        await send_text(sender, reason)
+        return
+
+    await record_usage(sender, "link")
     await send_text(sender, "Got the link! Let me check the article and the source... 🔍")
 
     try:

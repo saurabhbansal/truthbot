@@ -65,7 +65,7 @@ async def search_official(claim: str) -> list[OfficialSourceResult]:
         client = AsyncTavilyClient(api_key=TAVILY_API_KEY)
         response = await client.search(
             query=claim,
-            search_depth="advanced",
+            search_depth="basic",
             include_domains=relevant_domains,
             max_results=5,
         )

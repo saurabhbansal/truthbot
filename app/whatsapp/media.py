@@ -28,7 +28,11 @@ def _validate_media_bytes(data: bytes, expected_type: str = "image") -> bool:
     return True
 
 
-async def download_media(media_id: str, max_size: int | None = None) -> bytes | None:
+async def download_media(
+    media_id: str,
+    max_size: int | None = None,
+    expected_type: str = "",
+) -> bytes | None:
     """Download media from WhatsApp by media ID.
 
     Two-step process:
@@ -60,6 +64,9 @@ async def download_media(media_id: str, max_size: int | None = None) -> bytes | 
                 content = media_resp.content
                 if max_size and len(content) > max_size:
                     logger.warning("Downloaded media %s exceeds size limit: %d bytes", media_id, len(content))
+                    return None
+                if expected_type and not _validate_media_bytes(content, expected_type):
+                    logger.warning("Media %s failed content-type validation (expected %s)", media_id, expected_type)
                     return None
                 logger.info("Downloaded media %s (%d bytes)", media_id, len(content))
                 return content

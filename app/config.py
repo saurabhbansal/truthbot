@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+_logger = logging.getLogger("truthbot.config")
 
 
 def _require(name: str) -> str:
@@ -41,10 +44,6 @@ GOOGLE_FACT_CHECK_URL: str = (
     "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 )
 
-# Hive Moderation (optional -- GPT-4o Vision is the primary AI detection method)
-HIVE_API_KEY: str = os.getenv("HIVE_API_KEY", "")
-HIVE_API_URL: str = "https://api.thehive.ai/api/v2/task/sync"
-
 # Media size limits
 MAX_IMAGE_SIZE: int = 10 * 1024 * 1024  # 10 MB
 MAX_VIDEO_SIZE: int = 16 * 1024 * 1024  # 16 MB (WhatsApp's own limit)
@@ -53,3 +52,6 @@ MAX_VIDEO_SIZE: int = 16 * 1024 * 1024  # 16 MB (WhatsApp's own limit)
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "truthbot.db")
 PORT: int = int(os.getenv("PORT", "8000"))
+
+if not META_APP_SECRET:
+    _logger.warning("META_APP_SECRET not set — webhook signature verification is disabled")

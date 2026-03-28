@@ -1,19 +1,19 @@
-"""Source trust scoring -- aggregates evidence from all 4 layers into a confidence score."""
+"""Source trust scoring -- aggregates evidence from all source layers into a confidence score."""
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
 
+from app.db.cache import get_cached_evidence, set_cached_evidence
 from app.sources.fact_check_db import FactCheckResult, search_claims
 from app.sources.official_sources import OfficialSourceResult, search_official
 from app.sources.news_sources import NewsSourceResult, search_news
-from app.sources.web_search import WebSearchResult, search_web
+from app.sources.web_search import WebSearchResult
 from app.utils.logger import get_logger
 
 logger = get_logger("sources.trust")
 
-# Trust weights by layer
 LAYER_WEIGHTS = {
     "fact_check": 1.0,
     "official": 0.85,
@@ -24,7 +24,7 @@ LAYER_WEIGHTS = {
 
 @dataclass
 class SourceEvidence:
-    """All evidence collected from all 4 source layers for a single claim."""
+    """All evidence collected from source layers for a single claim."""
 
     claim: str
     fact_checks: list[FactCheckResult] = field(default_factory=list)
@@ -90,21 +90,39 @@ class SourceEvidence:
 
 
 async def gather_evidence(claim: str) -> SourceEvidence:
-    """Search all 4 source layers in parallel and compute confidence."""
+    """Search source layers and compute confidence.
+
+    Optimizations:
+    - Check evidence cache first (24h TTL)
+    - Always search Layer 1 (fact-checks, free API)
+    - If Layer 1 has strong results, short-circuit (skip Tavily calls)
+    - Otherwise search Layers 2+3 in parallel (basic depth to save credits)
+    - Layer 4 (general web) is dropped to save Tavily credits
+    """
+    cached = await get_cached_evidence(claim)
+    if cached is not None:
+        return cached
+
     evidence = SourceEvidence(claim=claim)
 
-    fact_checks, official, news, web = await asyncio.gather(
-        search_claims(claim),
-        search_official(claim),
-        search_news(claim),
-        search_web(claim),
-        return_exceptions=True,
-    )
-
+    fact_checks = await search_claims(claim)
     if isinstance(fact_checks, list):
         evidence.fact_checks = fact_checks
     else:
         logger.error("Fact check search failed: %s", fact_checks)
+
+    if evidence.has_fact_check and len(evidence.fact_checks) >= 2:
+        logger.info("Fact-check short-circuit: %d results for %r", len(evidence.fact_checks), claim[:60])
+        evidence.confidence = _compute_confidence(evidence)
+        evidence.highest_layer = _highest_layer(evidence)
+        await set_cached_evidence(claim, evidence)
+        return evidence
+
+    official, news = await asyncio.gather(
+        search_official(claim),
+        search_news(claim),
+        return_exceptions=True,
+    )
 
     if isinstance(official, list):
         evidence.official_results = official
@@ -116,24 +134,19 @@ async def gather_evidence(claim: str) -> SourceEvidence:
     else:
         logger.error("News source search failed: %s", news)
 
-    if isinstance(web, list):
-        evidence.web_results = web
-    else:
-        logger.error("Web search failed: %s", web)
-
     evidence.confidence = _compute_confidence(evidence)
     evidence.highest_layer = _highest_layer(evidence)
 
     logger.info(
-        "Evidence gathered: claim=%r fact_checks=%d official=%d news=%d web=%d confidence=%.2f",
+        "Evidence gathered: claim=%r fact_checks=%d official=%d news=%d confidence=%.2f",
         claim[:60],
         len(evidence.fact_checks),
         len(evidence.official_results),
         len(evidence.news_results),
-        len(evidence.web_results),
         evidence.confidence,
     )
 
+    await set_cached_evidence(claim, evidence)
     return evidence
 
 
@@ -150,7 +163,6 @@ def _compute_confidence(evidence: SourceEvidence) -> float:
     else:
         return 0.1
 
-    # Bonus for multiple layers agreeing
     layers_with_results = sum([
         evidence.has_fact_check,
         evidence.has_official,
@@ -159,7 +171,6 @@ def _compute_confidence(evidence: SourceEvidence) -> float:
     ])
     layer_bonus = min(0.10, (layers_with_results - 1) * 0.05)
 
-    # Bonus for multiple sources within a layer (deduplication signal)
     source_count = evidence.total_sources
     source_bonus = min(0.05, (source_count - 1) * 0.01)
 

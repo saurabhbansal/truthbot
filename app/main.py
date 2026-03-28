@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 from app.config import LOG_LEVEL
+from app.db.cache import sweep_expired_cache
 from app.db.database import init_db
 from app.db.usage import get_stats
 from app.whatsapp.webhook import router as whatsapp_router
@@ -19,9 +21,20 @@ logger = logging.getLogger("truthbot")
 app = FastAPI(title="TruthBot", version="0.1.0")
 
 
+async def _periodic_cache_sweep() -> None:
+    """Run cache sweep every 6 hours."""
+    while True:
+        await asyncio.sleep(6 * 3600)
+        try:
+            await sweep_expired_cache()
+        except Exception:
+            logger.exception("Periodic cache sweep error")
+
+
 @app.on_event("startup")
 async def startup() -> None:
     await init_db()
+    asyncio.create_task(_periodic_cache_sweep())
     logger.info("TruthBot started")
 
 

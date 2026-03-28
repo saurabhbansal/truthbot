@@ -68,6 +68,12 @@ async def fact_check_text(text: str) -> tuple[str, list[Verdict]]:
 
     Returns (formatted_message, list_of_verdicts).
     """
+    if not text or not text.strip():
+        return (
+            "Please send me a message, image, video, or link to fact-check!",
+            [],
+        )
+
     if _is_broad_sensitive_generalization(text):
         return _BROAD_CLAIM_FALLBACK, []
 
