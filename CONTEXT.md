@@ -225,6 +225,21 @@ These decisions were made through iterative testing and discussion. Do NOT chang
 **Decision**: Interactive WhatsApp buttons (Helpful / Not Helpful / Wrong) sent after every verdict. Negative feedback triggers a follow-up list (inaccurate, missing info, bad sources, unclear, other). "Wrong" feedback prompts user to share a correct source link.
 **File**: `app/feedback/feedback_handler.py`
 
+### 9. Broad Sensitive Generalizations Are Not Fact-Checked
+**Problem**: Claims like "Muslims are dangerous" or "Hindus are under attack" are not verifiable factual claims — fact-checking them could legitimize hate speech.
+**Decision**: TruthBot detects broad communal/religious generalizations and responds with a neutral redirect asking for a specific incident instead. This avoids taking sides while still being helpful.
+**File**: `app/engines/text_handler.py` — see `_is_broad_sensitive_generalization()`
+
+### 10. Claims Are Grounded Before Fact-Checking
+**Problem**: The LLM claim extractor could hallucinate claims not present in the original text.
+**Decision**: After extraction, claims are filtered through `filter_grounded_claims()` which checks token overlap against the source text. Only claims with 85%+ token overlap are kept.
+**File**: `app/engines/claim_extractor.py`
+
+### 11. Non-English Claims Are Translated Before Searching
+**Problem**: Hindi/regional language claims searched against English sources returned poor results.
+**Decision**: Claims are auto-translated to English before source searching, while preserving names, numbers, and dates exactly. The original claim language is preserved in the user-facing output.
+**File**: `app/engines/claim_extractor.py` — see `translate_claim_to_english()`
+
 ---
 
 ## Tech Stack
@@ -244,22 +259,22 @@ These decisions were made through iterative testing and discussion. Do NOT chang
 
 ---
 
-## File Structure (36 Python files, ~2,700 lines)
+## File Structure
 
 ```
 truthbot/
 ├── app/
-│   ├── main.py                    # FastAPI app, health + stats endpoints
+│   ├── main.py                    # FastAPI app, health + stats + legal policy endpoints
 │   ├── config.py                  # Environment variables loader
 │   ├── router/
 │   │   └── content_router.py      # Message dispatcher (text/image/video/link/feedback)
 │   ├── engines/
-│   │   ├── claim_extractor.py     # LLM claim extraction from text
+│   │   ├── claim_extractor.py     # LLM claim extraction + translation + grounding filter
 │   │   ├── verdict_engine.py      # Core verdict logic + anti-hallucination prompt
-│   │   ├── text_handler.py        # Full text fact-check pipeline orchestrator
+│   │   ├── text_handler.py        # Full text fact-check pipeline + sensitive content guard
 │   │   ├── image_handler.py       # OCR + AI detection + text pipeline
 │   │   ├── video_handler.py       # Hive deepfake + caption pipeline
-│   │   ├── link_handler.py        # Domain classification + article extraction
+│   │   ├── link_handler.py        # Domain classification + article extraction + social cleanup
 │   │   ├── ocr.py                 # Google Cloud Vision OCR
 │   │   └── hive_detector.py       # Hive AI/deepfake detection
 │   ├── sources/
@@ -285,7 +300,7 @@ truthbot/
 │   └── utils/
 │       ├── logger.py              # Logging utility
 │       └── rate_limiter.py        # In-memory rate limiter (5 req/min per phone)
-├── test_cli.py                    # Interactive CLI test harness
+├── test_cli.py                    # Interactive CLI test harness (text, textfile, link, image, video)
 ├── test_webhook.py                # Webhook payload simulator
 ├── requirements.txt               # Python dependencies
 ├── Dockerfile                     # Docker containerization
@@ -293,6 +308,9 @@ truthbot/
 ├── railway.toml                   # Railway config
 ├── GUIDE.md                       # "How to Use TruthBot" guide for family
 ├── README.md                      # Quick start + architecture overview
+├── PRIVACY_POLICY.md              # Privacy policy (for Meta app review)
+├── TERMS_OF_SERVICE.md            # Terms of service (for Meta app review)
+├── DATA_DELETION.md               # Data deletion instructions (for Meta app review)
 └── .env.example                   # API key template
 ```
 
@@ -496,6 +514,41 @@ aiosqlite==0.21.0
 
 ---
 
+## Recent Enhancements (added from personal machine)
+
+These were added after the initial 8 phases were completed:
+
+### 1. Meta App Review — Legal Policy Endpoints
+Three hosted HTML endpoints added to `app/main.py` for Meta's app publishing requirements:
+- `/privacy-policy` — Privacy policy page
+- `/terms` — Terms of service page
+- `/data-deletion` — Data deletion instructions
+- Corresponding markdown files: `PRIVACY_POLICY.md`, `TERMS_OF_SERVICE.md`, `DATA_DELETION.md`
+- Contact email: `factfuryteam@gmail.com`
+
+### 2. Multilingual Claim Support
+- **Claim translation**: Non-English claims (Hindi, etc.) are now auto-translated to English before searching sources (`translate_claim_to_english` in `claim_extractor.py`)
+- **Max claims increased**: From 5 to 12 per message, with max_tokens increased to 1000
+- **Grounding filter**: New `filter_grounded_claims()` function ensures extracted claims are actually present in the source text (prevents LLM hallucinating claims)
+
+### 3. Broad Sensitive Generalization Guard
+- `text_handler.py` now detects broad communal/religious generalizations (e.g., "Muslims are dangerous", "Hindus are under attack")
+- Instead of fact-checking these (which could legitimize hate speech), TruthBot responds: "This statement is too broad to verify. Please share a specific incident with details."
+- Covers group terms (Hindu, Muslim, Christian, Sikh, Dalit, Brahmin) + generalization terms (under attack, are dangerous, want to destroy, etc.)
+
+### 4. Social Media Link Cleanup
+- `link_handler.py` now has special handling for social media domains (Facebook, Instagram, X/Twitter, TikTok)
+- `_clean_extracted_content()` strips markdown images, base64 blobs, SVG markup, and UI scaffolding
+- `_extract_social_post_text()` extracts just the post text, stopping before comments/reactions/UI noise
+
+### 5. Multi-claim Display Fix
+- `formatter.py`: Removed the 80-char truncation on claim text in multi-verdict output — full claims now shown
+
+### 6. CLI `textfile` Command
+- `test_cli.py` now supports `textfile <path>` to load and fact-check text from a file (useful for long WhatsApp forwards)
+
+---
+
 ## What's Built (Complete)
 
 - [x] Phase 0: Project structure, FastAPI skeleton, Dockerfile, GitHub repo
@@ -509,6 +562,8 @@ aiosqlite==0.21.0
 - [x] Phase 6: Caching, rate limiting, usage stats, error handling
 - [x] Phase 7: Testing + prompt tuning (claim extractor, verdict engine, formatter)
 - [x] Phase 8: "How to Use TruthBot" guide (GUIDE.md)
+- [x] Phase 9: Meta app review (legal policies, hosted endpoints)
+- [x] Phase 9b: Multilingual claims, grounding filter, sensitive content guard, social link cleanup
 
 ---
 
