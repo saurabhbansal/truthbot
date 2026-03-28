@@ -15,6 +15,7 @@ from app.feedback.feedback_handler import (
     handle_feedback_response,
     send_feedback_buttons,
 )
+from app.config import MAX_IMAGE_SIZE, MAX_VIDEO_SIZE
 from app.utils.logger import get_logger
 from app.whatsapp.media import download_media
 from app.whatsapp.sender import send_text
@@ -121,16 +122,20 @@ async def _handle_text(sender: str, sender_name: str, message: dict) -> None:
     try:
         result_message, verdicts = await fact_check_text(text_body)
         await send_text(sender, result_message)
-
-        if verdicts:
-            verdict_id = generate_verdict_id()
-            await send_feedback_buttons(sender, verdict_id)
     except Exception:
         logger.exception("Text fact-check failed")
         await send_text(
             sender,
             "Oops, something went wrong while checking this. Please try again in a moment!",
         )
+        return
+
+    try:
+        if verdicts:
+            verdict_id = generate_verdict_id()
+            await send_feedback_buttons(sender, verdict_id)
+    except Exception:
+        logger.exception("Failed to send feedback buttons for text")
 
 
 async def _handle_image(sender: str, sender_name: str, message: dict) -> None:
@@ -141,22 +146,26 @@ async def _handle_image(sender: str, sender_name: str, message: dict) -> None:
     await send_text(sender, "Got your image! Analyzing it... 🔍\n(this may take 10-15 seconds)")
 
     try:
-        image_bytes = await download_media(media_id)
+        image_bytes = await download_media(media_id, max_size=MAX_IMAGE_SIZE)
         if not image_bytes:
-            await send_text(sender, "Sorry, I couldn't download the image. Try sending it again?")
+            await send_text(sender, "Sorry, I couldn't download the image. It may be too large (max 10MB) or unavailable. Try sending it again?")
             return
 
         result = await fact_check_image(image_bytes, caption=caption)
         await send_text(sender, result)
-
-        verdict_id = generate_verdict_id()
-        await send_feedback_buttons(sender, verdict_id)
     except Exception:
         logger.exception("Image fact-check failed")
         await send_text(
             sender,
             "Oops, something went wrong analyzing this image. Please try again!",
         )
+        return
+
+    try:
+        verdict_id = generate_verdict_id()
+        await send_feedback_buttons(sender, verdict_id)
+    except Exception:
+        logger.exception("Failed to send feedback buttons for image")
 
 
 async def _handle_video(sender: str, sender_name: str, message: dict) -> None:
@@ -171,22 +180,26 @@ async def _handle_video(sender: str, sender_name: str, message: dict) -> None:
     )
 
     try:
-        video_bytes = await download_media(media_id)
+        video_bytes = await download_media(media_id, max_size=MAX_VIDEO_SIZE)
         if not video_bytes:
-            await send_text(sender, "Sorry, I couldn't download the video. Try sending it again?")
+            await send_text(sender, "Sorry, I couldn't download the video. It may be too large (max 16MB) or unavailable. Try sending it again?")
             return
 
         result = await fact_check_video(video_bytes, caption=caption)
         await send_text(sender, result)
-
-        verdict_id = generate_verdict_id()
-        await send_feedback_buttons(sender, verdict_id)
     except Exception:
         logger.exception("Video fact-check failed")
         await send_text(
             sender,
             "Oops, something went wrong analyzing this video. Please try again!",
         )
+        return
+
+    try:
+        verdict_id = generate_verdict_id()
+        await send_feedback_buttons(sender, verdict_id)
+    except Exception:
+        logger.exception("Failed to send feedback buttons for video")
 
 
 async def _handle_link(sender: str, sender_name: str, text: str) -> None:
@@ -200,15 +213,19 @@ async def _handle_link(sender: str, sender_name: str, text: str) -> None:
     try:
         result = await fact_check_link(urls[0])
         await send_text(sender, result)
-
-        verdict_id = generate_verdict_id()
-        await send_feedback_buttons(sender, verdict_id)
     except Exception:
         logger.exception("Link fact-check failed")
         await send_text(
             sender,
             "Oops, something went wrong checking this link. Please try again!",
         )
+        return
+
+    try:
+        verdict_id = generate_verdict_id()
+        await send_feedback_buttons(sender, verdict_id)
+    except Exception:
+        logger.exception("Failed to send feedback buttons for link")
 
 
 async def _handle_interactive(sender: str, sender_name: str, message: dict) -> None:

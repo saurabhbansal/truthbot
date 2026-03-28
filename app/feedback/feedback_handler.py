@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 
 from app.db.database import get_db
@@ -17,7 +16,7 @@ async def send_feedback_buttons(to: str, verdict_id: str) -> None:
     """Send feedback buttons after a verdict."""
     await send_buttons(
         to=to,
-        body="Was this helpful? Your feedback helps me improve!",
+        body_text="Was this helpful? Your feedback helps me improve!",
         buttons=[
             {"id": f"fb_yes_{verdict_id}", "title": "👍 Helpful"},
             {"id": f"fb_no_{verdict_id}", "title": "👎 Not Helpful"},
@@ -44,7 +43,7 @@ async def handle_feedback_response(to: str, button_id: str) -> None:
         await _log_feedback(verdict_id, user_hash, "negative")
         await send_list(
             to=to,
-            body="Sorry about that! Can you tell me what went wrong?",
+            body_text="Sorry about that! Can you tell me what went wrong?",
             button_text="Select reason",
             sections=[
                 {
@@ -125,8 +124,11 @@ async def _update_feedback_reason(verdict_id: str, user_hash: str, reason: str) 
         db = await get_db()
         await db.execute(
             """UPDATE feedback SET negative_reason = ?
-               WHERE verdict_id = ? AND user_phone_hash = ?
-               ORDER BY created_at DESC LIMIT 1""",
+               WHERE rowid = (
+                   SELECT rowid FROM feedback
+                   WHERE verdict_id = ? AND user_phone_hash = ?
+                   ORDER BY created_at DESC LIMIT 1
+               )""",
             (reason, verdict_id, user_hash),
         )
         await db.commit()

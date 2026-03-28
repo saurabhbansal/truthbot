@@ -30,6 +30,7 @@ WHATSAPP_MEDIA_URL: str = "https://graph.facebook.com/v22.0"
 # OpenAI
 OPENAI_API_KEY: str = _require("OPENAI_API_KEY")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_VERDICT_MODEL: str = os.getenv("OPENAI_VERDICT_MODEL", "gpt-4o")
 
 # Tavily
 TAVILY_API_KEY: str = _require("TAVILY_API_KEY")
@@ -40,9 +41,13 @@ GOOGLE_FACT_CHECK_URL: str = (
     "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 )
 
-# Hive Moderation
+# Hive Moderation (optional -- GPT-4o Vision is the primary AI detection method)
 HIVE_API_KEY: str = os.getenv("HIVE_API_KEY", "")
 HIVE_API_URL: str = "https://api.thehive.ai/api/v2/task/sync"
+
+# Media size limits
+MAX_IMAGE_SIZE: int = 10 * 1024 * 1024  # 10 MB
+MAX_VIDEO_SIZE: int = 16 * 1024 * 1024  # 16 MB (WhatsApp's own limit)
 
 # App settings
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

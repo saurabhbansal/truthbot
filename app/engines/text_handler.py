@@ -86,23 +86,52 @@ async def fact_check_text(text: str) -> tuple[str, list[Verdict]]:
 
     logger.info("Processing %d claims", len(claims))
 
-    # Keep user-visible output in English while accepting non-English inputs.
-    english_claims = await asyncio.gather(
-        *[translate_claim_to_english(claim) for claim in claims]
+    english_claims_raw = await asyncio.gather(
+        *[translate_claim_to_english(claim) for claim in claims],
+        return_exceptions=True,
+    )
+    # Fall back to original claim text if translation failed
+    english_claims = [
+        orig if isinstance(trans, BaseException) else trans
+        for orig, trans in zip(claims, english_claims_raw)
+    ]
+
+    evidence_raw = await asyncio.gather(
+        *[gather_evidence(claim) for claim in english_claims],
+        return_exceptions=True,
     )
 
-    evidence_list = await asyncio.gather(
-        *[gather_evidence(claim) for claim in english_claims]
-    )
+    # Only proceed with claims whose evidence gathering succeeded
+    valid_pairs = [
+        (claim, evidence)
+        for claim, evidence in zip(english_claims, evidence_raw)
+        if not isinstance(evidence, BaseException)
+    ]
+    if not valid_pairs:
+        logger.error("All evidence gathering failed")
+        return (
+            "I'm having trouble verifying this right now. Please try again in a moment!",
+            [],
+        )
 
-    verdicts = await asyncio.gather(
+    valid_claims, valid_evidence = zip(*valid_pairs)
+
+    verdicts_raw = await asyncio.gather(
         *[
             produce_verdict(claim, evidence)
-            for claim, evidence in zip(english_claims, evidence_list)
-        ]
+            for claim, evidence in zip(valid_claims, valid_evidence)
+        ],
+        return_exceptions=True,
     )
 
-    verdicts = list(verdicts)
+    verdicts = [v for v in verdicts_raw if not isinstance(v, BaseException)]
+    if not verdicts:
+        logger.error("All verdict production failed")
+        return (
+            "I'm having trouble verifying this right now. Please try again in a moment!",
+            [],
+        )
+
     message = format_multi_verdict(verdicts)
 
     return message, verdicts
