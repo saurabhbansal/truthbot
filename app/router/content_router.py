@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from app.engines.image_handler import fact_check_image
-from app.engines.link_handler import extract_urls, fact_check_link
+from app.engines.link_handler import extract_urls, fact_check_link, is_video_link
 from app.engines.text_handler import fact_check_text
 from app.engines.video_handler import fact_check_video
 from app.feedback.feedback_handler import (
@@ -227,16 +227,28 @@ async def _handle_link(sender: str, sender_name: str, text: str) -> None:
         await send_text(sender, _REDIRECT_MSG)
         return
 
-    allowed, reason = await check_daily_limit(sender, "link")
+    url = urls[0]
+    is_video = is_video_link(url)
+    usage_type = "video" if is_video else "link"
+
+    allowed, reason = await check_daily_limit(sender, usage_type)
     if not allowed:
         await send_text(sender, reason)
         return
 
-    await record_usage(sender, "link")
-    await send_text(sender, "Got the link! Let me check the article and the source... 🔍")
+    await record_usage(sender, usage_type)
+
+    if is_video:
+        await send_text(
+            sender,
+            "Got your video link! Analyzing it... 📹\n"
+            "(this may take 15-60 seconds depending on the video)",
+        )
+    else:
+        await send_text(sender, "Got the link! Let me check the article and the source... 🔍")
 
     try:
-        result = await fact_check_link(urls[0])
+        result = await fact_check_link(url)
         await send_text(sender, result)
     except Exception:
         logger.exception("Link fact-check failed")

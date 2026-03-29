@@ -47,6 +47,8 @@ GOOGLE_FACT_CHECK_URL: str = (
 # Media size limits
 MAX_IMAGE_SIZE: int = 10 * 1024 * 1024  # 10 MB
 MAX_VIDEO_SIZE: int = 16 * 1024 * 1024  # 16 MB (WhatsApp's own limit)
+MAX_VIDEO_DOWNLOAD_SIZE: int = 50 * 1024 * 1024  # 50 MB for yt-dlp downloads
+VIDEO_DOWNLOAD_TIMEOUT: int = int(os.getenv("VIDEO_DOWNLOAD_TIMEOUT", "60"))
 
 # App settings
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

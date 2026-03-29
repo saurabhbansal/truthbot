@@ -91,13 +91,18 @@ VERDICT_PROMPT = """You are TruthBot, a fact-checking assistant. You must produc
 - OUT OF CONTEXT: Real content used in wrong context (Pattern E: real media, wrong attribution)
 - UNVERIFIED: ONLY use when the claim is obscure/niche AND you truly found no related information at all
 
+## CONCISENESS RULES:
+- For clear-cut TRUE or FALSE verdicts with strong evidence: keep explanation to 2-3 sentences citing the key source.
+- For nuanced verdicts (MISLEADING, MOSTLY FALSE, OUTDATED, MISSING CONTEXT, OUT OF CONTEXT): provide 4-6 sentences explaining what part is true, what part is wrong, and why the distinction matters.
+- Never pad with filler phrases like "Based on the evidence provided" or "After reviewing the sources". Get straight to the facts.
+
 ## RESPONSE FORMAT (JSON):
 {{
     "label": "one of the labels above",
     "confidence": 0.0 to 1.0,
     "summary": "1-2 sentence verdict that explains WHAT is true or false and WHY. Be specific — name the actual facts. Examples: 'India's GDP grew 6.7% in Q3 2025, not 15% as claimed, according to the Ministry of Statistics.', 'No RBI circular or press release announces this policy change.'",
-    "explanation": "Comprehensive explanation with specific source citations. Walk through the evidence: what each source says, how it relates to the claim, and why the verdict follows. Include relevant context, numbers, dates, and counterpoints. Use confident language when sources are strong, hedged language when sources are limited. No length limit — be as thorough as needed.",
-    "partial_truth_pattern": "if MISLEADING/MOSTLY FALSE/OUTDATED/MISSING CONTEXT/OUT OF CONTEXT, explain what part is true and what part is false/misleading in detail",
+    "explanation": "Concise explanation with specific source citations. For clear-cut verdicts (TRUE/FALSE), 2-3 sentences citing the key evidence. For nuanced verdicts, 4-6 sentences explaining what is true vs false and why. Always cite specific sources by name.",
+    "partial_truth_pattern": "if MISLEADING/MOSTLY FALSE/OUTDATED/MISSING CONTEXT/OUT OF CONTEXT, explain what part is true and what part is false/misleading",
     "cited_sources": ["url1", "url2"]
 }}"""
 
@@ -132,13 +137,14 @@ async def produce_verdict(claim: str, evidence: SourceEvidence) -> Verdict:
                         "Be decisive — if evidence points toward false, say FALSE. "
                         "Only say UNVERIFIED for truly obscure claims with zero related information. "
                         "Never editorialize, never take sides, never praise or criticize any entity. "
-                        "State facts only. Provide thorough, well-reasoned explanations."
+                        "State facts only. Be concise: for clear-cut verdicts keep explanations to 2-3 sentences, "
+                        "for nuanced verdicts use 4-6 sentences."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=2500,
+            max_tokens=1500,
             response_format={"type": "json_object"},
         )
 

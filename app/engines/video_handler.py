@@ -143,13 +143,12 @@ async def _analyze_frames_with_vision(frame_paths: list[str]) -> str:
 
 
 async def _transcribe_audio(audio_path: str) -> str:
-    """Transcribe audio using OpenAI Whisper API."""
+    """Transcribe audio using OpenAI Whisper API (auto-detects language)."""
     try:
         with open(audio_path, "rb") as f:
             transcript = await _client.audio.transcriptions.create(
                 model="gpt-4o-mini-transcribe",
                 file=f,
-                language="en",
             )
         text = transcript.text.strip() if transcript.text else ""
         logger.info("Whisper transcription: %d chars", len(text))
@@ -159,45 +158,43 @@ async def _transcribe_audio(audio_path: str) -> str:
         return ""
 
 
-async def fact_check_video(video_bytes: bytes, caption: str = "") -> str:
-    """Full video fact-checking pipeline.
+async def analyze_video_file(video_path: str, caption: str = "") -> str:
+    """Core video analysis pipeline that works on a file path.
 
-    1. Write video to temp file
-    2. Extract frames + audio in parallel via ffmpeg
-    3. Analyze frames with GPT-4o Vision + transcribe audio with Whisper in parallel
-    4. Check for AI-generated/manipulated content
-    5. Combine all text sources and run fact-checking pipeline
+    Used by both uploaded-video and video-link-download flows.
+    1. Extract frames + audio in parallel via ffmpeg
+    2. Analyze frames with GPT-4o Vision + transcribe audio with Whisper in parallel
+    3. Check for AI-generated/manipulated content
+    4. Combine all text sources and run fact-checking pipeline
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        video_path = os.path.join(tmpdir, "video.mp4")
-        Path(video_path).write_bytes(video_bytes)
+    tmpdir = os.path.dirname(video_path)
 
-        frame_task = _extract_frames(video_path, tmpdir)
-        audio_task = _extract_audio(video_path, tmpdir)
+    frame_task = _extract_frames(video_path, tmpdir)
+    audio_task = _extract_audio(video_path, tmpdir)
 
-        try:
-            frame_paths, audio_path = await asyncio.gather(frame_task, audio_task)
-        except Exception:
-            logger.exception("ffmpeg extraction failed")
-            frame_paths, audio_path = [], None
+    try:
+        frame_paths, audio_out = await asyncio.gather(frame_task, audio_task)
+    except Exception:
+        logger.exception("ffmpeg extraction failed")
+        frame_paths, audio_out = [], None
 
-        async def _noop() -> str:
-            return ""
+    async def _noop() -> str:
+        return ""
 
-        vision_task = (
-            _analyze_frames_with_vision(frame_paths)
-            if frame_paths else _noop()
-        )
-        transcribe_task = (
-            _transcribe_audio(audio_path)
-            if audio_path else _noop()
-        )
+    vision_task = (
+        _analyze_frames_with_vision(frame_paths)
+        if frame_paths else _noop()
+    )
+    transcribe_task = (
+        _transcribe_audio(audio_out)
+        if audio_out else _noop()
+    )
 
-        try:
-            vision_analysis, transcript = await asyncio.gather(vision_task, transcribe_task)
-        except Exception:
-            logger.exception("Video analysis/transcription failed")
-            vision_analysis, transcript = "", ""
+    try:
+        vision_analysis, transcript = await asyncio.gather(vision_task, transcribe_task)
+    except Exception:
+        logger.exception("Video analysis/transcription failed")
+        vision_analysis, transcript = "", ""
 
     parts: list[str] = []
 
@@ -245,3 +242,11 @@ async def fact_check_video(video_bytes: bytes, caption: str = "") -> str:
             )
 
     return "\n".join(parts)
+
+
+async def fact_check_video(video_bytes: bytes, caption: str = "") -> str:
+    """Full video fact-checking pipeline for uploaded videos (bytes input)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        video_path = os.path.join(tmpdir, "video.mp4")
+        Path(video_path).write_bytes(video_bytes)
+        return await analyze_video_file(video_path, caption=caption)

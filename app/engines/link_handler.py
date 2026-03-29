@@ -1,15 +1,30 @@
-"""Link fact-check handler -- extract article content, check domain credibility, fact-check claims."""
+"""Link fact-check handler -- extract article content, check domain credibility, fact-check claims.
+
+Video links use a 4-tier hybrid pipeline:
+  Tier 1: yt-dlp metadata (no download)
+  Tier 2: Transcript extraction (youtube-transcript-api / yt-dlp subtitles)
+  Tier 3: Web search for existing fact-checks
+  Tier 4: Full download via yt-dlp + ffmpeg/Vision/Whisper analysis
+"""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import os
 import re
+import tempfile
 from urllib.parse import urlparse, parse_qs
 
-import httpx
 from tavily import AsyncTavilyClient
 
-from app.config import TAVILY_API_KEY
+from app.config import (
+    MAX_VIDEO_DOWNLOAD_SIZE,
+    TAVILY_API_KEY,
+    VIDEO_DOWNLOAD_TIMEOUT,
+)
 from app.engines.text_handler import fact_check_text
+from app.engines.video_handler import analyze_video_file
 from app.sources.allowlists import (
     ALL_NEWS_DOMAINS,
     ALL_OFFICIAL_DOMAINS,
@@ -43,16 +58,32 @@ VIDEO_DOMAINS = {
     "rumble.com",
     "bitchute.com",
     "odysee.com",
+    "x.com",
+    "twitter.com",
+    "facebook.com",
+    "m.facebook.com",
+    "fb.watch",
+    "snapchat.com",
+    "story.snapchat.com",
+    "twitch.tv",
+    "streamable.com",
+    "v.redd.it",
+    "reddit.com",
 }
 
 _VIDEO_PATH_PATTERNS = (
     re.compile(r"/reel/", re.IGNORECASE),
     re.compile(r"/reels/", re.IGNORECASE),
     re.compile(r"/video/", re.IGNORECASE),
+    re.compile(r"/videos/", re.IGNORECASE),
     re.compile(r"/shorts/", re.IGNORECASE),
     re.compile(r"/watch", re.IGNORECASE),
     re.compile(r"/p/[A-Za-z0-9_-]+", re.IGNORECASE),
+    re.compile(r"/status/\d+", re.IGNORECASE),
+    re.compile(r"/clip/", re.IGNORECASE),
 )
+
+_MIN_TRANSCRIPT_LENGTH = 100
 
 
 def extract_urls(text: str) -> list[str]:
@@ -81,18 +112,30 @@ def classify_url(url: str) -> dict:
     return {"domain": domain, "tier": "general", "trust": "unknown", "emoji": "🌐"}
 
 
-def _is_video_link(url: str) -> bool:
-    """Detect whether a URL points to a video (YouTube, Instagram Reel, TikTok, etc.)."""
+_ALWAYS_VIDEO_DOMAINS = {
+    "youtube.com", "m.youtube.com", "youtu.be",
+    "tiktok.com", "vm.tiktok.com",
+    "vimeo.com", "dailymotion.com", "rumble.com", "bitchute.com", "odysee.com",
+    "fb.watch", "streamable.com", "v.redd.it", "twitch.tv",
+}
+
+_PATH_CHECK_DOMAINS = {
+    "instagram.com", "x.com", "twitter.com",
+    "facebook.com", "m.facebook.com",
+    "snapchat.com", "story.snapchat.com",
+    "reddit.com",
+}
+
+
+def is_video_link(url: str) -> bool:
+    """Detect whether a URL points to a video."""
     domain = _extract_domain(url)
-    if domain in VIDEO_DOMAINS:
-        if domain in ("youtube.com", "m.youtube.com", "youtu.be"):
-            return True
+    if domain in _ALWAYS_VIDEO_DOMAINS:
+        return True
+    if domain in _PATH_CHECK_DOMAINS:
         for pat in _VIDEO_PATH_PATTERNS:
             if pat.search(url):
                 return True
-        if domain in ("tiktok.com", "vm.tiktok.com", "vimeo.com",
-                       "dailymotion.com", "rumble.com", "bitchute.com", "odysee.com"):
-            return True
     return False
 
 
@@ -123,7 +166,7 @@ async def fact_check_link(url: str) -> str:
         )
         return "\n".join(parts)
 
-    if _is_video_link(url):
+    if is_video_link(url):
         return await _handle_video_link(url, domain)
 
     article_text = await _extract_article(url)
@@ -147,33 +190,47 @@ async def fact_check_link(url: str) -> str:
 
 
 async def _handle_video_link(url: str, domain: str) -> str:
-    """Handle video links with a tiered approach:
-    1. Try YouTube transcript (free, no download)
-    2. Fall back to metadata + web search
-    3. If nothing works, offer dual prompt to user
-    """
-    transcript = await _get_youtube_transcript(url) if _is_youtube(url) else ""
+    """4-tier hybrid pipeline for video links.
 
-    if transcript:
+    Tier 1: yt-dlp metadata (no download, free, 2-3s)
+    Tier 2: Transcript (youtube-transcript-api or yt-dlp subtitles)
+    Tier 3: Web search for existing fact-checks using metadata
+    Tier 4: Full download via yt-dlp + ffmpeg/Vision/Whisper pipeline
+    """
+    # --- Tier 1: Metadata via yt-dlp ---
+    meta = await _ytdlp_metadata(url)
+    title = meta.get("title", "")
+    description = meta.get("description", "")[:1000]
+    logger.info("Video meta for %s: title=%r", domain, title[:80] if title else "(none)")
+
+    # --- Tier 2: Transcript ---
+    transcript = ""
+    if _is_youtube(url):
+        transcript = await _get_youtube_transcript(url)
+    if not transcript or len(transcript) < _MIN_TRANSCRIPT_LENGTH:
+        transcript = await _ytdlp_subtitles(url)
+
+    if transcript and len(transcript) >= _MIN_TRANSCRIPT_LENGTH:
         parts = ["📹 *Checking claims from this video transcript:*", ""]
         text_message, _ = await fact_check_text(transcript[:4000])
         parts.append(text_message)
         return "\n".join(parts)
 
-    title, description = await _get_video_metadata(url)
+    # --- Tier 3: Metadata + web search ---
     search_context = await _search_about_video(url, title) if title else ""
 
-    combined = ""
+    combined_meta = ""
     if title:
-        combined = f"Video title: {title}"
+        combined_meta = f"Video title: {title}"
     if description:
-        combined = f"{combined}\nVideo description: {description[:1000]}".strip()
+        combined_meta = f"{combined_meta}\nVideo description: {description}".strip()
     if search_context:
-        combined = f"{combined}\n\nWeb context about this video: {search_context}".strip()
+        combined_meta = f"{combined_meta}\n\nWeb context about this video: {search_context}".strip()
 
-    if combined:
+    # If we have strong metadata + search results with fact-checks, use them
+    if search_context and combined_meta:
         parts = [f"📹 *Checking claims from this video ({domain}):*", ""]
-        text_message, _ = await fact_check_text(combined[:4000])
+        text_message, _ = await fact_check_text(combined_meta[:4000])
         parts.append(text_message)
         parts.append("")
         parts.append(
@@ -183,6 +240,27 @@ async def _handle_video_link(url: str, domain: str) -> str:
         )
         return "\n".join(parts)
 
+    # --- Tier 4: Full download + analysis ---
+    logger.info("Tier 4: attempting full video download for %s", url)
+    video_result = await _download_and_analyze_video(url, caption=title)
+
+    if video_result:
+        return video_result
+
+    # If we have some metadata but download failed, use what we have
+    if combined_meta:
+        parts = [f"📹 *Checking claims from this video ({domain}):*", ""]
+        text_message, _ = await fact_check_text(combined_meta[:4000])
+        parts.append(text_message)
+        parts.append("")
+        parts.append(
+            "💡 _I couldn't download the video directly, so this analysis is based on "
+            "the title and description. For a more accurate check, upload the video or "
+            "type out the specific claim._"
+        )
+        return "\n".join(parts)
+
+    # All tiers failed
     return (
         f"📹 *Video link from:* _{domain}_\n\n"
         "I couldn't extract content from this video link.\n\n"
@@ -193,6 +271,158 @@ async def _handle_video_link(url: str, domain: str) -> str:
         "💡 _Option 1 is faster and works best for most forwarded videos!_"
     )
 
+
+# ---------------------------------------------------------------------------
+# yt-dlp helpers
+# ---------------------------------------------------------------------------
+
+async def _ytdlp_metadata(url: str) -> dict:
+    """Extract video metadata via yt-dlp without downloading."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "yt-dlp", "--dump-json", "--no-download",
+            "--no-warnings", "--no-playlist",
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0:
+            logger.debug("yt-dlp metadata failed: %s", stderr.decode()[:200])
+            return {}
+        return json.loads(stdout.decode())
+    except asyncio.TimeoutError:
+        logger.warning("yt-dlp metadata timed out for %s", url)
+        return {}
+    except Exception:
+        logger.debug("yt-dlp metadata error for %s", url)
+        return {}
+
+
+async def _ytdlp_subtitles(url: str) -> str:
+    """Try to extract auto-generated subtitles via yt-dlp (no video download)."""
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_template = os.path.join(tmpdir, "subs")
+            proc = await asyncio.create_subprocess_exec(
+                "yt-dlp",
+                "--skip-download",
+                "--write-auto-subs",
+                "--sub-lang", "en,hi,en-orig",
+                "--sub-format", "vtt",
+                "--convert-subs", "srt",
+                "-o", out_template,
+                "--no-warnings", "--no-playlist",
+                url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=30)
+
+            # Look for any subtitle file in the temp dir
+            for fname in os.listdir(tmpdir):
+                if fname.endswith((".srt", ".vtt")):
+                    fpath = os.path.join(tmpdir, fname)
+                    with open(fpath, encoding="utf-8", errors="ignore") as f:
+                        raw = f.read()
+                    text = _clean_subtitle_text(raw)
+                    if len(text) >= _MIN_TRANSCRIPT_LENGTH:
+                        logger.info("yt-dlp subtitles: %d chars from %s", len(text), fname)
+                        return text[:5000]
+        return ""
+    except asyncio.TimeoutError:
+        logger.warning("yt-dlp subtitles timed out for %s", url)
+        return ""
+    except Exception:
+        logger.debug("yt-dlp subtitles error for %s", url)
+        return ""
+
+
+def _clean_subtitle_text(raw: str) -> str:
+    """Strip SRT/VTT timestamps and formatting, return plain text."""
+    lines = raw.splitlines()
+    text_lines: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if re.match(r"^\d+$", line):
+            continue
+        if re.match(r"^\d{2}:\d{2}", line):
+            continue
+        if line.startswith("WEBVTT") or line.startswith("Kind:") or line.startswith("Language:"):
+            continue
+        clean = re.sub(r"<[^>]+>", "", line)
+        clean = re.sub(r"\{[^}]+\}", "", clean).strip()
+        if clean and clean not in text_lines[-1:]:
+            text_lines.append(clean)
+    return " ".join(text_lines)
+
+
+async def _download_and_analyze_video(url: str, caption: str = "") -> str | None:
+    """Tier 4: Download video via yt-dlp and run the full analysis pipeline.
+
+    Returns the analysis result string, or None if download fails.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = os.path.join(tmpdir, "video.mp4")
+            max_size_mb = MAX_VIDEO_DOWNLOAD_SIZE // (1024 * 1024)
+
+            proc = await asyncio.create_subprocess_exec(
+                "yt-dlp",
+                "-f", "best[filesize<50M]/best",
+                "--max-filesize", f"{max_size_mb}M",
+                "--merge-output-format", "mp4",
+                "-o", out_path,
+                "--no-playlist",
+                "--no-warnings",
+                url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=VIDEO_DOWNLOAD_TIMEOUT
+            )
+
+            if proc.returncode != 0:
+                logger.info(
+                    "yt-dlp download failed (rc=%d): %s",
+                    proc.returncode, stderr.decode()[:300],
+                )
+                return None
+
+            # yt-dlp may add extension variants; find the actual file
+            actual_path = out_path
+            if not os.path.exists(actual_path):
+                for fname in os.listdir(tmpdir):
+                    if fname.startswith("video"):
+                        actual_path = os.path.join(tmpdir, fname)
+                        break
+
+            if not os.path.exists(actual_path):
+                logger.warning("yt-dlp produced no output file for %s", url)
+                return None
+
+            file_size = os.path.getsize(actual_path)
+            if file_size > MAX_VIDEO_DOWNLOAD_SIZE:
+                logger.warning("Downloaded video too large: %d bytes", file_size)
+                return None
+
+            logger.info("Downloaded video: %d bytes, analyzing...", file_size)
+            return await analyze_video_file(actual_path, caption=caption)
+
+    except asyncio.TimeoutError:
+        logger.warning("yt-dlp download timed out for %s", url)
+        return None
+    except Exception:
+        logger.exception("Video download+analyze failed for %s", url)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Existing helpers (YouTube transcript, metadata, search)
+# ---------------------------------------------------------------------------
 
 def _is_youtube(url: str) -> bool:
     domain = _extract_domain(url)
@@ -237,44 +467,6 @@ async def _get_youtube_transcript(url: str) -> str:
     except Exception:
         logger.info("No YouTube transcript available for %s", video_id)
         return ""
-
-
-async def _get_video_metadata(url: str) -> tuple[str, str]:
-    """Extract video title and description from Open Graph / HTML meta tags."""
-    try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            resp = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; TruthBot/1.0)"
-            })
-        if resp.status_code != 200:
-            return "", ""
-
-        html = resp.text[:50000]
-        title = _extract_meta(html, "og:title") or _extract_meta(html, "title") or ""
-        description = _extract_meta(html, "og:description") or _extract_meta(html, "description") or ""
-        return title.strip(), description.strip()
-    except Exception:
-        logger.debug("Could not fetch video metadata for %s", url)
-        return "", ""
-
-
-def _extract_meta(html: str, name: str) -> str:
-    """Extract content from a meta tag by property or name."""
-    patterns = [
-        re.compile(rf'<meta\s+property="{re.escape(name)}"\s+content="([^"]*)"', re.IGNORECASE),
-        re.compile(rf'<meta\s+content="([^"]*)"\s+property="{re.escape(name)}"', re.IGNORECASE),
-        re.compile(rf'<meta\s+name="{re.escape(name)}"\s+content="([^"]*)"', re.IGNORECASE),
-        re.compile(rf'<meta\s+content="([^"]*)"\s+name="{re.escape(name)}"', re.IGNORECASE),
-    ]
-    if name == "title":
-        title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
-        if title_match:
-            return title_match.group(1).strip()
-    for pat in patterns:
-        m = pat.search(html)
-        if m:
-            return m.group(1)
-    return ""
 
 
 async def _search_about_video(url: str, title: str) -> str:
