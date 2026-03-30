@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import hashlib
 
+from app.config import (
+    RETENTION_DAYS_DAILY_USAGE,
+    RETENTION_DAYS_FEEDBACK,
+    RETENTION_DAYS_USAGE_STATS,
+)
 from app.db.database import get_db
 from app.utils.logger import get_logger
 
@@ -13,6 +18,7 @@ DAILY_USER_LIMIT = 30
 DAILY_GLOBAL_LIMIT = 500
 DAILY_VIDEO_USER_LIMIT = 5
 DAILY_IMAGE_USER_LIMIT = 10
+DAILY_AUDIO_USER_LIMIT = 10
 
 
 def _hash_phone(phone: str) -> str:
@@ -53,6 +59,15 @@ async def check_daily_limit(user_phone: str, message_type: str = "text") -> tupl
                 image_count = (await cursor.fetchone())[0]
                 if image_count >= DAILY_IMAGE_USER_LIMIT:
                     return False, f"You've reached your daily limit of {DAILY_IMAGE_USER_LIMIT} image checks. Try sending the claim as text instead!"
+
+            if message_type == "audio":
+                cursor = await db.execute(
+                    "SELECT COUNT(*) FROM daily_usage WHERE user_phone_hash = ? AND date = date('now') AND message_type = 'audio'",
+                    (user_hash,),
+                )
+                audio_count = (await cursor.fetchone())[0]
+                if audio_count >= DAILY_AUDIO_USER_LIMIT:
+                    return False, f"You've reached your daily limit of {DAILY_AUDIO_USER_LIMIT} audio checks. Try sending the claim as text instead!"
 
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM daily_usage WHERE date = date('now')"
@@ -142,3 +157,68 @@ async def get_stats() -> dict:
     except Exception:
         logger.exception("Failed to get stats")
         return {}
+
+
+async def get_message_type_trend(days: int = 30) -> dict:
+    """Get message type usage trend for dashboard windows."""
+    try:
+        db = await get_db()
+        try:
+            cursor = await db.execute(
+                """SELECT date(created_at), message_type, COUNT(*)
+                   FROM usage_stats
+                   WHERE created_at >= datetime('now', ?)
+                   GROUP BY date(created_at), message_type
+                   ORDER BY date(created_at)""",
+                (f"-{days} days",),
+            )
+            rows = await cursor.fetchall()
+            trend: dict[str, dict[str, int]] = {}
+            for day, msg_type, count in rows:
+                day_bucket = trend.setdefault(day, {})
+                day_bucket[msg_type] = count
+            return trend
+        finally:
+            await db.close()
+    except Exception:
+        logger.exception("Failed to get message type trend")
+        return {}
+
+
+async def sweep_retention_data() -> dict[str, int]:
+    """Delete rows older than retention windows."""
+    deleted = {"daily_usage": 0, "usage_stats": 0, "feedback": 0, "verdict_context": 0}
+    try:
+        db = await get_db()
+        try:
+            cur = await db.execute(
+                "DELETE FROM daily_usage WHERE created_at < datetime('now', ?)",
+                (f"-{RETENTION_DAYS_DAILY_USAGE} days",),
+            )
+            deleted["daily_usage"] = cur.rowcount
+
+            cur = await db.execute(
+                "DELETE FROM usage_stats WHERE created_at < datetime('now', ?)",
+                (f"-{RETENTION_DAYS_USAGE_STATS} days",),
+            )
+            deleted["usage_stats"] = cur.rowcount
+
+            cur = await db.execute(
+                "DELETE FROM feedback WHERE created_at < datetime('now', ?)",
+                (f"-{RETENTION_DAYS_FEEDBACK} days",),
+            )
+            deleted["feedback"] = cur.rowcount
+
+            cur = await db.execute(
+                "DELETE FROM verdict_context WHERE created_at < datetime('now', ?)",
+                (f"-{RETENTION_DAYS_FEEDBACK} days",),
+            )
+            deleted["verdict_context"] = cur.rowcount
+
+            await db.commit()
+            return deleted
+        finally:
+            await db.close()
+    except Exception:
+        logger.exception("Failed to sweep retention data")
+        return deleted

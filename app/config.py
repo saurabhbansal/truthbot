@@ -30,10 +30,13 @@ WHATSAPP_API_URL: str = (
 )
 WHATSAPP_MEDIA_URL: str = "https://graph.facebook.com/v22.0"
 
-# OpenAI
+# OpenAI (used for image Vision analysis as backup)
 OPENAI_API_KEY: str = _require("OPENAI_API_KEY")
-OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_VERDICT_MODEL: str = os.getenv("OPENAI_VERDICT_MODEL", "gpt-4o")
+
+# Gemini (primary LLM for verdicts, claims, video/audio)
+GEMINI_API_KEY: str = _require("GEMINI_API_KEY")
+GEMINI_PRO_MODEL: str = "gemini-2.5-pro"
+GEMINI_FLASH_MODEL: str = "gemini-2.5-flash"
 
 # Tavily
 TAVILY_API_KEY: str = _require("TAVILY_API_KEY")
@@ -48,12 +51,16 @@ GOOGLE_FACT_CHECK_URL: str = (
 MAX_IMAGE_SIZE: int = 10 * 1024 * 1024  # 10 MB
 MAX_VIDEO_SIZE: int = 16 * 1024 * 1024  # 16 MB (WhatsApp's own limit)
 MAX_VIDEO_DOWNLOAD_SIZE: int = 50 * 1024 * 1024  # 50 MB for yt-dlp downloads
+MAX_AUDIO_SIZE: int = 16 * 1024 * 1024  # 16 MB
 VIDEO_DOWNLOAD_TIMEOUT: int = int(os.getenv("VIDEO_DOWNLOAD_TIMEOUT", "60"))
 
 # App settings
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "truthbot.db")
 PORT: int = int(os.getenv("PORT", "8000"))
+RETENTION_DAYS_DAILY_USAGE: int = int(os.getenv("RETENTION_DAYS_DAILY_USAGE", "35"))
+RETENTION_DAYS_USAGE_STATS: int = int(os.getenv("RETENTION_DAYS_USAGE_STATS", "90"))
+RETENTION_DAYS_FEEDBACK: int = int(os.getenv("RETENTION_DAYS_FEEDBACK", "90"))
 
 if not META_APP_SECRET:
     _logger.warning("META_APP_SECRET not set — webhook signature verification is disabled")

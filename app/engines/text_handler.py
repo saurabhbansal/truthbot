@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import re
 
+from app.db.cache import content_hash, get_cached_verdict, set_cached_verdict
 from app.engines.claim_extractor import (
     extract_claims,
     filter_grounded_claims,
     translate_claim_to_english,
 )
+from app.feedback.feedback_handler import get_feedback_flagged_claim_hashes
 from app.engines.verdict_engine import Verdict, produce_verdict
 from app.sources.source_trust import gather_evidence
 from app.verdict.formatter import format_multi_verdict
@@ -77,6 +79,17 @@ async def fact_check_text(text: str) -> tuple[str, list[Verdict]]:
     if _is_broad_sensitive_generalization(text):
         return _BROAD_CLAIM_FALLBACK, []
 
+    claim_hash = content_hash(text)
+    flagged_claim_hashes = await get_feedback_flagged_claim_hashes()
+    strict_mode = claim_hash in set(flagged_claim_hashes)
+
+    cached = await get_cached_verdict(text)
+    if cached is not None:
+        logger.info("Verdict cache hit for text (%d chars)", len(text))
+        cached_msg = cached.get("message", "")
+        if cached_msg and not strict_mode:
+            return cached_msg, []
+
     claims = await extract_claims(text)
     claims = filter_grounded_claims(text, claims)
 
@@ -103,7 +116,7 @@ async def fact_check_text(text: str) -> tuple[str, list[Verdict]]:
     ]
 
     evidence_raw = await asyncio.gather(
-        *[gather_evidence(claim) for claim in english_claims],
+        *[gather_evidence(claim, strict_mode=strict_mode) for claim in english_claims],
         return_exceptions=True,
     )
 
@@ -139,5 +152,10 @@ async def fact_check_text(text: str) -> tuple[str, list[Verdict]]:
         )
 
     message = format_multi_verdict(verdicts)
+
+    try:
+        await set_cached_verdict(text, {"message": message})
+    except Exception:
+        logger.debug("Failed to cache verdict")
 
     return message, verdicts

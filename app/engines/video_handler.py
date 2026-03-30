@@ -1,4 +1,4 @@
-"""Video fact-check handler -- ffmpeg frame/audio extraction, GPT-4o Vision, Whisper transcription."""
+"""Video fact-check handler -- Gemini 2.5 Pro native video analysis with ffmpeg+Vision+Whisper fallback."""
 
 from __future__ import annotations
 
@@ -8,15 +8,17 @@ import os
 import tempfile
 from pathlib import Path
 
+from google.genai import types
 from openai import AsyncOpenAI
 
-from app.config import OPENAI_API_KEY, OPENAI_VERDICT_MODEL
+from app.config import GEMINI_PRO_MODEL, OPENAI_API_KEY
+from app.engines.gemini_client import client as gemini_client
 from app.engines.text_handler import fact_check_text
 from app.utils.logger import get_logger
 
 logger = get_logger("engines.video")
 
-_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+_openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MAX_FRAMES = 4
 MAX_AUDIO_DURATION_S = 120
@@ -36,6 +38,53 @@ _FRAME_PROMPT = (
     "suspicious jumps/edits.\n\n"
     "Be thorough and factual. Do not speculate beyond what is visible."
 )
+
+
+async def _analyze_video_with_gemini(video_path: str) -> str:
+    """Analyze video natively with Gemini 2.5 Pro (visuals + audio in one call)."""
+    try:
+        uploaded_file = await asyncio.to_thread(
+            gemini_client.files.upload, file=video_path
+        )
+
+        prompt = (
+            "Analyze this video thoroughly. Provide:\n\n"
+            "1. **Visual description**: What does the video show? Describe people, objects, "
+            "text overlays, logos, screenshots, locations across all scenes.\n"
+            "2. **Text transcription**: Transcribe ALL visible text in any language "
+            "(headlines, captions, watermarks, screenshots of messages).\n"
+            "3. **Audio transcription**: Transcribe ALL spoken audio in any language. "
+            "If the audio is in Hindi or another non-English language, provide both "
+            "the original language transcription and an English translation.\n"
+            "4. **Factual claims**: List every factual claim made in the video "
+            "(through speech, text, or visual implication).\n"
+            "5. **AI assessment**: Does this video appear to be AI-generated, "
+            "digitally manipulated, or a deepfake? Note any visual/audio artifacts.\n\n"
+            "Be thorough and factual. Do not speculate beyond what is visible/audible."
+        )
+
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=GEMINI_PRO_MODEL,
+            contents=[prompt, uploaded_file],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=2000,
+            ),
+        )
+
+        result = response.text or ""
+        logger.info("Gemini video analysis: %d chars", len(result))
+
+        try:
+            await asyncio.to_thread(gemini_client.files.delete, name=uploaded_file.name)
+        except Exception:
+            pass
+
+        return result.strip()
+    except Exception:
+        logger.exception("Gemini video analysis failed")
+        return ""
 
 
 async def _extract_frames(video_path: str, output_dir: str) -> list[str]:
@@ -128,8 +177,8 @@ async def _analyze_frames_with_vision(frame_paths: list[str]) -> str:
         })
 
     try:
-        response = await _client.chat.completions.create(
-            model=OPENAI_VERDICT_MODEL,
+        response = await _openai_client.chat.completions.create(
+            model="gpt-5.4",
             messages=[{"role": "user", "content": content}],
             max_tokens=1500,
             temperature=0.1,
@@ -146,7 +195,7 @@ async def _transcribe_audio(audio_path: str) -> str:
     """Transcribe audio using OpenAI Whisper API (auto-detects language)."""
     try:
         with open(audio_path, "rb") as f:
-            transcript = await _client.audio.transcriptions.create(
+            transcript = await _openai_client.audio.transcriptions.create(
                 model="gpt-4o-mini-transcribe",
                 file=f,
             )
@@ -158,15 +207,8 @@ async def _transcribe_audio(audio_path: str) -> str:
         return ""
 
 
-async def analyze_video_file(video_path: str, caption: str = "") -> str:
-    """Core video analysis pipeline that works on a file path.
-
-    Used by both uploaded-video and video-link-download flows.
-    1. Extract frames + audio in parallel via ffmpeg
-    2. Analyze frames with GPT-4o Vision + transcribe audio with Whisper in parallel
-    3. Check for AI-generated/manipulated content
-    4. Combine all text sources and run fact-checking pipeline
-    """
+async def _fallback_analyze_video(video_path: str, caption: str = "") -> str:
+    """Fallback pipeline: ffmpeg frame/audio extraction, GPT-4o Vision, Whisper transcription."""
     tmpdir = os.path.dirname(video_path)
 
     frame_task = _extract_frames(video_path, tmpdir)
@@ -242,6 +284,44 @@ async def analyze_video_file(video_path: str, caption: str = "") -> str:
             )
 
     return "\n".join(parts)
+
+
+async def analyze_video_file(video_path: str, caption: str = "") -> str:
+    """Core video analysis pipeline. Tries Gemini native first, falls back to ffmpeg+Vision+Whisper."""
+
+    gemini_analysis = await _analyze_video_with_gemini(video_path)
+
+    if gemini_analysis:
+        parts: list[str] = []
+
+        ai_keywords = ("ai-generated", "ai generated", "artificially generated",
+                       "digitally manipulated", "deepfake", "appears to be generated")
+        analysis_lower = gemini_analysis.lower()
+        if any(kw in analysis_lower for kw in ai_keywords):
+            if any(w in analysis_lower for w in ("likely ai", "appears to be ai", "appears to be generated",
+                                                  "is ai-generated", "is ai generated")):
+                parts.append("🤖 *POSSIBLE AI-GENERATED VIDEO*")
+                parts.append("")
+                parts.append(
+                    "This video shows signs of being AI-generated or digitally manipulated. "
+                    "Always verify the source before sharing."
+                )
+                parts.append("")
+
+        fact_check_input = ""
+        if caption:
+            fact_check_input = caption
+        fact_check_input = f"{fact_check_input}\n\nVideo analysis: {gemini_analysis}".strip()
+
+        if parts:
+            parts.append("---")
+            parts.append("")
+        text_message, _ = await fact_check_text(fact_check_input)
+        parts.append(text_message)
+        return "\n".join(parts)
+
+    logger.info("Falling back to ffmpeg+Vision+Whisper pipeline")
+    return await _fallback_analyze_video(video_path, caption)
 
 
 async def fact_check_video(video_bytes: bytes, caption: str = "") -> str:

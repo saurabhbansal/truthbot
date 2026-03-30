@@ -23,8 +23,17 @@ def _validate_media_bytes(data: bytes, expected_type: str = "image") -> bool:
     if expected_type == "image":
         return any(data.startswith(magic) for magic in _IMAGE_MAGIC)
     if expected_type == "video":
-        # MP4 files contain 'ftyp' within the first 12 bytes
-        return b"ftyp" in data[:12] or data[:4] == b"\x1a\x45\xdf\xa3"  # webm
+        return b"ftyp" in data[:12] or data[:4] == b"\x1a\x45\xdf\xa3"
+    if expected_type == "audio":
+        if data[:4] == b"OggS":
+            return True
+        if data[:3] == b"ID3":
+            return True
+        if data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+            return True
+        if b"ftyp" in data[:12]:
+            return True
+        return False
     return True
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import time
+from collections import OrderedDict
 
 from fastapi import APIRouter, Query, Request, Response
 
@@ -19,6 +21,26 @@ _RATE_LIMIT_MSG = (
     "Whoa, slow down! You're sending messages faster than I can check them.\n\n"
     "Please wait a minute and try again."
 )
+
+_DEDUP_TTL = 120
+_MAX_DEDUP_SIZE = 1000
+_seen_messages: OrderedDict[str, float] = OrderedDict()
+
+
+def _is_duplicate(message_id: str) -> bool:
+    now = time.monotonic()
+    while _seen_messages:
+        oldest_id, oldest_time = next(iter(_seen_messages.items()))
+        if now - oldest_time > _DEDUP_TTL:
+            _seen_messages.pop(oldest_id)
+        else:
+            break
+    if message_id in _seen_messages:
+        return True
+    _seen_messages[message_id] = now
+    while len(_seen_messages) > _MAX_DEDUP_SIZE:
+        _seen_messages.popitem(last=False)
+    return False
 
 
 def _verify_signature(payload: bytes, signature_header: str) -> bool:
@@ -68,6 +90,11 @@ async def receive(request: Request) -> dict:
                 contacts = value.get("contacts", [])
 
                 for message in messages:
+                    msg_id = message.get("id", "")
+                    if msg_id and _is_duplicate(msg_id):
+                        logger.debug("Skipping duplicate message: %s", msg_id)
+                        continue
+
                     sender = message.get("from", "")
                     sender_name = ""
                     if contacts:

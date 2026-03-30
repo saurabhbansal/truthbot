@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS feedback (
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS verdict_context (
+    verdict_id      TEXT PRIMARY KEY,
+    content_hash    TEXT NOT NULL,
+    message_type    TEXT NOT NULL,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS usage_stats (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     user_phone_hash TEXT NOT NULL,
@@ -53,6 +60,7 @@ CREATE TABLE IF NOT EXISTS daily_usage (
 CREATE INDEX IF NOT EXISTS idx_cache_created ON cache(created_at);
 CREATE INDEX IF NOT EXISTS idx_evidence_cache_created ON evidence_cache(created_at);
 CREATE INDEX IF NOT EXISTS idx_feedback_verdict ON feedback(verdict_id);
+CREATE INDEX IF NOT EXISTS idx_verdict_context_hash ON verdict_context(content_hash);
 CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_stats(user_phone_hash);
 CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_stats(created_at);
 CREATE INDEX IF NOT EXISTS idx_daily_usage_user_date ON daily_usage(user_phone_hash, date);

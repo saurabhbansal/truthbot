@@ -10,3 +10,4 @@ python-multipart==0.0.20
 aiosqlite==0.21.0
 youtube-transcript-api==1.0.3
 yt-dlp==2026.3.17
+google-genai==1.69.0

@@ -308,7 +308,7 @@ async def _ytdlp_subtitles(url: str) -> str:
                 "yt-dlp",
                 "--skip-download",
                 "--write-auto-subs",
-                "--sub-lang", "en,hi,en-orig",
+                "--sub-lang", "en,hi,ta,te,bn,mr,gu,kn,ml,pa,en-orig",
                 "--sub-format", "vtt",
                 "--convert-subs", "srt",
                 "-o", out_template,
@@ -457,16 +457,23 @@ async def _get_youtube_transcript(url: str) -> str:
         return ""
 
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-        ytt = YouTubeTranscriptApi()
-        transcript_list = ytt.fetch(video_id)
-        text_parts = [entry.text for entry in transcript_list if hasattr(entry, "text")]
-        full_text = " ".join(text_parts)
-        logger.info("YouTube transcript: %d chars for %s", len(full_text), video_id)
-        return full_text[:5000]
+        text = await asyncio.to_thread(_fetch_transcript_sync, video_id)
+        if text:
+            logger.info("YouTube transcript: %d chars for %s", len(text), video_id)
+        return text
     except Exception:
         logger.info("No YouTube transcript available for %s", video_id)
         return ""
+
+
+def _fetch_transcript_sync(video_id: str) -> str:
+    """Synchronous YouTube transcript fetch (runs in thread pool)."""
+    from youtube_transcript_api import YouTubeTranscriptApi
+    ytt = YouTubeTranscriptApi()
+    transcript_list = ytt.fetch(video_id)
+    text_parts = [entry.text for entry in transcript_list if hasattr(entry, "text")]
+    full_text = " ".join(text_parts)
+    return full_text[:5000]
 
 
 async def _search_about_video(url: str, title: str) -> str:

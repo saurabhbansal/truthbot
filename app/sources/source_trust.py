@@ -89,7 +89,7 @@ class SourceEvidence:
         return sources
 
 
-async def gather_evidence(claim: str) -> SourceEvidence:
+async def gather_evidence(claim: str, strict_mode: bool = False) -> SourceEvidence:
     """Search source layers and compute confidence.
 
     Optimizations:
@@ -111,7 +111,7 @@ async def gather_evidence(claim: str) -> SourceEvidence:
     else:
         logger.error("Fact check search failed: %s", fact_checks)
 
-    if evidence.has_fact_check and len(evidence.fact_checks) >= 2:
+    if evidence.has_fact_check and len(evidence.fact_checks) >= 2 and not strict_mode:
         logger.info("Fact-check short-circuit: %d results for %r", len(evidence.fact_checks), claim[:60])
         evidence.confidence = _compute_confidence(evidence)
         evidence.highest_layer = _highest_layer(evidence)
@@ -134,8 +134,16 @@ async def gather_evidence(claim: str) -> SourceEvidence:
     else:
         logger.error("News source search failed: %s", news)
 
+    if not evidence.official_results and not evidence.news_results:
+        logger.info("Tavily returned no results, trying Gemini Grounding for %r", claim[:60])
+        grounding_results = await _gemini_grounding_search(claim)
+        if grounding_results:
+            evidence.news_results = grounding_results
+
     evidence.confidence = _compute_confidence(evidence)
     evidence.highest_layer = _highest_layer(evidence)
+    if strict_mode and evidence.highest_layer != "fact_check":
+        evidence.confidence = max(0.1, round(evidence.confidence - 0.1, 2))
 
     logger.info(
         "Evidence gathered: claim=%r fact_checks=%d official=%d news=%d confidence=%.2f",
@@ -148,6 +156,66 @@ async def gather_evidence(claim: str) -> SourceEvidence:
 
     await set_cached_evidence(claim, evidence)
     return evidence
+
+
+async def _gemini_grounding_search(claim: str) -> list[NewsSourceResult]:
+    """Fallback: use Gemini with Google Search grounding when Tavily is exhausted."""
+    try:
+        import asyncio
+        from app.config import GEMINI_PRO_MODEL
+        from app.engines.gemini_client import client as gemini_client
+        from google.genai import types
+
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=GEMINI_PRO_MODEL,
+            contents=f"Find recent, reliable news articles and official sources about this claim. For each source, provide the title, URL, and a brief summary of what it says: \"{claim}\"",
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=1000,
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
+        )
+
+        text = response.text or ""
+        if not text:
+            return []
+
+        results: list[NewsSourceResult] = []
+        if hasattr(response, 'candidates') and response.candidates:
+            candidate = response.candidates[0]
+            grounding_meta = getattr(candidate, 'grounding_metadata', None)
+            if grounding_meta and hasattr(grounding_meta, 'grounding_chunks'):
+                for chunk in grounding_meta.grounding_chunks[:5]:
+                    web = getattr(chunk, 'web', None)
+                    if web:
+                        from urllib.parse import urlparse
+                        url = getattr(web, 'uri', '') or ''
+                        title = getattr(web, 'title', '') or ''
+                        domain = urlparse(url).netloc.lower() if url else ''
+                        results.append(NewsSourceResult(
+                            title=title,
+                            url=url,
+                            content=text[:500],
+                            domain=domain,
+                            score=0.5,
+                        ))
+
+        if not results and text:
+            results.append(NewsSourceResult(
+                title="Gemini Grounding Search",
+                url="",
+                content=text[:800],
+                domain="google.com",
+                score=0.4,
+            ))
+
+        logger.info("Gemini Grounding: %d results for %r", len(results), claim[:60])
+        return results
+
+    except Exception:
+        logger.exception("Gemini Grounding search failed")
+        return []
 
 
 def _compute_confidence(evidence: SourceEvidence) -> float:

@@ -1,13 +1,15 @@
-"""Image fact-check handler -- GPT-4o Vision analysis, OCR, and text fact-checking."""
+"""Image fact-check handler -- Gemini-first image analysis with OpenAI fallback."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 
+from google.genai import types
 from openai import AsyncOpenAI
 
-from app.config import OPENAI_API_KEY, OPENAI_VERDICT_MODEL
+from app.config import GEMINI_PRO_MODEL, OPENAI_API_KEY
+from app.engines.gemini_client import client as gemini_client
 from app.engines.ocr import extract_text_from_image
 from app.engines.text_handler import fact_check_text
 from app.utils.logger import get_logger
@@ -30,13 +32,47 @@ _VISION_PROMPT = (
 )
 
 
-async def _analyze_image_with_vision(image_bytes: bytes) -> str:
-    """Send image to GPT-4o Vision for comprehensive visual analysis."""
+def _detect_image_mime(image_bytes: bytes) -> str:
+    if image_bytes[:2] == b'\xff\xd8':
+        return "image/jpeg"
+    if image_bytes[:4] == b'\x89PNG':
+        return "image/png"
+    if image_bytes[:4] == b'RIFF' and image_bytes[8:12] == b'WEBP':
+        return "image/webp"
+    return "image/jpeg"
+
+
+async def _analyze_image_with_gemini(image_bytes: bytes) -> str:
+    """Analyze image with Gemini first to reduce OpenAI cost."""
+    mime = _detect_image_mime(image_bytes)
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=GEMINI_PRO_MODEL,
+            contents=[
+                _VISION_PROMPT,
+                types.Part.from_bytes(data=image_bytes, mime_type=mime),
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=1500,
+            ),
+        )
+        content = response.text or ""
+        logger.info("Gemini image analysis: %d chars", len(content))
+        return content.strip()
+    except Exception:
+        logger.exception("Gemini image analysis failed")
+        return ""
+
+
+async def _analyze_image_with_openai(image_bytes: bytes, model: str) -> str:
+    """Analyze image with OpenAI as fallback/escalation."""
     b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
     try:
         response = await _client.chat.completions.create(
-            model=OPENAI_VERDICT_MODEL,
+            model=model,
             messages=[
                 {
                     "role": "user",
@@ -45,7 +81,7 @@ async def _analyze_image_with_vision(image_bytes: bytes) -> str:
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{b64_image}",
+                                "url": f"data:{_detect_image_mime(image_bytes)};base64,{b64_image}",
                                 "detail": "high",
                             },
                         },
@@ -57,25 +93,30 @@ async def _analyze_image_with_vision(image_bytes: bytes) -> str:
         )
 
         content = response.choices[0].message.content or ""
-        logger.info("Vision analysis: %d chars", len(content))
+        logger.info("OpenAI image analysis (%s): %d chars", model, len(content))
         return content.strip()
 
     except Exception:
-        logger.exception("GPT-4o Vision analysis failed")
+        logger.exception("OpenAI image analysis failed for model=%s", model)
         return ""
 
 
 async def fact_check_image(image_bytes: bytes, caption: str = "") -> str:
     """Full image fact-checking pipeline.
 
-    1. Run GPT-4o Vision analysis + OCR in parallel
+    1. Run Gemini image analysis + OCR in parallel
     2. Check for AI-generated/manipulated content from vision analysis
     3. Combine vision description + OCR text + caption for fact-checking
     """
-    vision_task = _analyze_image_with_vision(image_bytes)
     ocr_task = extract_text_from_image(image_bytes)
-
-    vision_analysis, ocr_text = await asyncio.gather(vision_task, ocr_task)
+    vision_analysis, ocr_text = await asyncio.gather(
+        _analyze_image_with_gemini(image_bytes),
+        ocr_task,
+    )
+    if not vision_analysis:
+        vision_analysis = await _analyze_image_with_openai(image_bytes, model="gpt-4o")
+    if not vision_analysis:
+        vision_analysis = await _analyze_image_with_openai(image_bytes, model="gpt-5.4")
 
     parts: list[str] = []
 

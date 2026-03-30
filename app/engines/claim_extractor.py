@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
-from openai import AsyncOpenAI
+from google.genai import types
 
-from app.config import OPENAI_API_KEY, OPENAI_MODEL
+from app.config import GEMINI_FLASH_MODEL
+from app.engines.gemini_client import client as gemini_client
 from app.utils.logger import get_logger
 
 logger = get_logger("engines.claims")
-
-_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MAX_INPUT_LENGTH = 8000
 
@@ -57,18 +57,19 @@ async def extract_claims(text: str) -> list[str]:
         text = text[:MAX_INPUT_LENGTH]
 
     try:
-        response = await _client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "You extract factual claims from text. Always respond with valid JSON."},
-                {"role": "user", "content": EXTRACTION_PROMPT.format(text=text)},
-            ],
-            temperature=0.1,
-            max_tokens=1000,
-            response_format={"type": "json_object"},
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=GEMINI_FLASH_MODEL,
+            contents=EXTRACTION_PROMPT.format(text=text),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+                max_output_tokens=1000,
+                system_instruction="You extract factual claims from text. Always respond with valid JSON.",
+            ),
         )
 
-        content = response.choices[0].message.content or "[]"
+        content = response.text or "[]"
         parsed = json.loads(content)
 
         if isinstance(parsed, list):
@@ -141,16 +142,17 @@ async def translate_claim_to_english(text: str) -> str:
     if not text.strip():
         return text
     try:
-        response = await _client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "You translate claims to English exactly."},
-                {"role": "user", "content": TRANSLATION_PROMPT.format(text=text)},
-            ],
-            temperature=0,
-            max_tokens=300,
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=GEMINI_FLASH_MODEL,
+            contents=TRANSLATION_PROMPT.format(text=text),
+            config=types.GenerateContentConfig(
+                temperature=0,
+                max_output_tokens=300,
+                system_instruction="You translate claims to English exactly.",
+            ),
         )
-        translated = (response.choices[0].message.content or "").strip()
+        translated = (response.text or "").strip()
         return translated or text
     except Exception:
         logger.exception("Claim translation failed")

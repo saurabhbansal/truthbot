@@ -5,18 +5,21 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.engines.audio_handler import fact_check_audio
 from app.engines.image_handler import fact_check_image
 from app.engines.link_handler import extract_urls, fact_check_link, is_video_link
 from app.engines.text_handler import fact_check_text
 from app.engines.video_handler import fact_check_video
+from app.db.cache import content_hash
 from app.feedback.feedback_handler import (
     generate_verdict_id,
     handle_feedback_reason,
     handle_feedback_response,
+    register_verdict_context,
     send_feedback_buttons,
 )
-from app.config import MAX_IMAGE_SIZE, MAX_VIDEO_SIZE
-from app.db.usage import check_daily_limit, record_usage
+from app.config import MAX_AUDIO_SIZE, MAX_IMAGE_SIZE, MAX_VIDEO_SIZE
+from app.db.usage import check_daily_limit, log_usage, record_usage
 from app.utils.logger import get_logger
 from app.whatsapp.media import download_media
 from app.whatsapp.sender import send_text
@@ -37,7 +40,8 @@ _ONBOARDING_MSG = (
     "• Text messages & chain forwards\n"
     "• News links & articles\n"
     "• Images & screenshots (forwarded or from your gallery)\n"
-    "• Videos (AI-generated & deepfakes)\n\n"
+    "• Videos (AI-generated & deepfakes)\n"
+    "• Voice notes & audio messages\n\n"
     "Try it now — send me something suspicious!\n\n"
     'Type "help" anytime for tips.'
 )
@@ -53,22 +57,12 @@ _HELP_MSG = (
     "*TIPS:*\n"
     "• The more context, the better — send the full message\n"
     "• I work best with specific claims\n"
-    "• I'll always tell you when I'm not sure\n\n"
-    "*COMING SOON:*\n"
-    "• Audio/voice note checking\n"
-    "• Hindi responses\n"
-    "• Group chat support (@TruthBot)"
+    "• I'll always tell you when I'm not sure"
 )
 
 _UNSUPPORTED_MSG = (
     "Hey! I got your {type}, but I can't fact-check those yet.\n\n"
     "Send or forward me a text message, image, video, or link and I'll get to work!"
-)
-
-_AUDIO_MSG = (
-    "Hey! I got your voice note, but I can't check audio messages yet (coming soon!).\n\n"
-    "In the meantime, could you type out the main claim you want me to check? "
-    "Or forward the original text/image instead?"
 )
 
 _REDIRECT_MSG = (
@@ -91,7 +85,7 @@ async def route_message(sender: str, sender_name: str, message: dict[str, Any]) 
     elif msg_type == "video":
         await _handle_video(sender, sender_name, message)
     elif msg_type in ("audio", "voice"):
-        await send_text(sender, _AUDIO_MSG)
+        await _handle_audio(sender, sender_name, message)
     elif msg_type == "document":
         await send_text(sender, _UNSUPPORTED_MSG.format(type="document"))
     elif msg_type == "interactive":
@@ -138,8 +132,16 @@ async def _handle_text(sender: str, sender_name: str, message: dict) -> None:
         return
 
     try:
+        label = verdicts[0].label.value if verdicts else ""
+        conf = verdicts[0].confidence if verdicts else 0.0
+        await log_usage(sender, "text", verdict_label=label, confidence=conf)
+    except Exception:
+        logger.debug("Failed to log text usage")
+
+    try:
         if verdicts:
             verdict_id = generate_verdict_id()
+            await register_verdict_context(verdict_id, content_hash(text_body), "text")
             await send_feedback_buttons(sender, verdict_id)
     except Exception:
         logger.exception("Failed to send feedback buttons for text")
@@ -175,7 +177,13 @@ async def _handle_image(sender: str, sender_name: str, message: dict) -> None:
         return
 
     try:
+        await log_usage(sender, "image")
+    except Exception:
+        logger.debug("Failed to log image usage")
+
+    try:
         verdict_id = generate_verdict_id()
+        await register_verdict_context(verdict_id, content_hash(result), "image")
         await send_feedback_buttons(sender, verdict_id)
     except Exception:
         logger.exception("Failed to send feedback buttons for image")
@@ -215,10 +223,58 @@ async def _handle_video(sender: str, sender_name: str, message: dict) -> None:
         return
 
     try:
+        await log_usage(sender, "video")
+    except Exception:
+        logger.debug("Failed to log video usage")
+
+    try:
         verdict_id = generate_verdict_id()
+        await register_verdict_context(verdict_id, content_hash(result), "video")
         await send_feedback_buttons(sender, verdict_id)
     except Exception:
         logger.exception("Failed to send feedback buttons for video")
+
+
+async def _handle_audio(sender: str, sender_name: str, message: dict) -> None:
+    audio_data = message.get("audio", message.get("voice", {}))
+    caption = audio_data.get("caption", "")
+    media_id = audio_data.get("id", "")
+
+    allowed, reason = await check_daily_limit(sender, "audio")
+    if not allowed:
+        await send_text(sender, reason)
+        return
+
+    await record_usage(sender, "audio")
+    await send_text(sender, "Got your voice note! Analyzing it... 🎙️\n(this may take 10-20 seconds)")
+
+    try:
+        audio_bytes = await download_media(media_id, max_size=MAX_AUDIO_SIZE, expected_type="audio")
+        if not audio_bytes:
+            await send_text(sender, "Sorry, I couldn't download the audio. It may be too large (max 16MB) or unavailable. Try sending it again?")
+            return
+
+        result = await fact_check_audio(audio_bytes, caption=caption)
+        await send_text(sender, result)
+    except Exception:
+        logger.exception("Audio fact-check failed")
+        await send_text(
+            sender,
+            "Oops, something went wrong analyzing this audio. Please try again!",
+        )
+        return
+
+    try:
+        await log_usage(sender, "audio")
+    except Exception:
+        logger.debug("Failed to log audio usage")
+
+    try:
+        verdict_id = generate_verdict_id()
+        await register_verdict_context(verdict_id, content_hash(result), "audio")
+        await send_feedback_buttons(sender, verdict_id)
+    except Exception:
+        logger.exception("Failed to send feedback buttons for audio")
 
 
 async def _handle_link(sender: str, sender_name: str, text: str) -> None:
@@ -259,7 +315,13 @@ async def _handle_link(sender: str, sender_name: str, text: str) -> None:
         return
 
     try:
+        await log_usage(sender, usage_type)
+    except Exception:
+        logger.debug("Failed to log link usage")
+
+    try:
         verdict_id = generate_verdict_id()
+        await register_verdict_context(verdict_id, content_hash(result), usage_type)
         await send_feedback_buttons(sender, verdict_id)
     except Exception:
         logger.exception("Failed to send feedback buttons for link")

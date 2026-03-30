@@ -1,65 +1,50 @@
 # TruthBot — WhatsApp Fact Checker
 
-A WhatsApp bot that helps family and friends verify forwarded messages, images, videos, and links. Forward anything suspicious to TruthBot and get a clear verdict: TRUE, FALSE, MISLEADING, or one of several nuanced labels.
+TruthBot helps family and friends verify forwarded text, images, videos, audio, and links on WhatsApp.
 
 ## Quick Start
 
 ```bash
-# Clone the repo
 git clone https://github.com/saurabhbansal/truthbot.git
 cd truthbot
-
-# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Copy env template and fill in your API keys
 cp .env.example .env
-# Edit .env with your actual keys
-
-# Run locally
 uvicorn app.main:app --reload --port 8000
 ```
 
-Visit `http://localhost:8000` to verify the health check.
+Visit `http://localhost:8000` for health check.
 
-## Architecture
+## Current Model Architecture
 
-```
-WhatsApp User → WhatsApp Cloud API → Webhook (FastAPI) → Content Router
-                                                              ↓
-                                          ┌─────────────────────────────────┐
-                                          │  Text Engine  │  Image Engine   │
-                                          │  Link Engine  │  Video Engine   │
-                                          └─────────────────────────────────┘
-                                                              ↓
-                                                    4-Layer Source Trust
-                                                    (Fact-Check DBs →
-                                                     Official Sources →
-                                                     News Outlets →
-                                                     Web Search)
-                                                              ↓
-                                                     Verdict Composer
-                                                              ↓
-                                                WhatsApp Cloud API → User
-```
+- Claim extraction/translation: Gemini 2.5 Flash
+- Verdict reasoning: Gemini 2.5 Pro (fallback: OpenAI GPT-5.4)
+- Image analysis: Gemini-first with OpenAI fallback/escalation
+- Video analysis: Gemini native video (fallback: ffmpeg + OpenAI vision + Whisper)
+- Audio analysis: Gemini native audio (fallback: Whisper)
+- Evidence: Google Fact Check + Tavily, with Gemini Grounding overflow fallback
+
+## Feedback and Analytics
+
+- 2-step feedback flow: Helpful / Not Helpful, then reason selection for negative feedback
+- Feedback is revisable (latest feedback state wins)
+- Dashboard endpoints:
+  - `/stats`
+  - `/feedback-stats`
+  - `/admin/feedback`
 
 ## API Keys Required
 
-| Service | Purpose | Get it at |
-|---------|---------|-----------|
-| WhatsApp Cloud API | Send/receive messages | developers.facebook.com |
-| OpenAI | Claim extraction, reasoning | platform.openai.com |
-| Tavily | Web search for verification | app.tavily.com |
-| Google Cloud | Fact Check API + Vision OCR | console.cloud.google.com |
-| Hive Moderation | AI image/video + deepfake detection | thehive.ai |
+- WhatsApp Cloud API
+- Gemini API key
+- OpenAI API key (fallback paths)
+- Tavily API key
+- Google API key (Fact Check + OCR)
 
 ## Deployment
 
-Configured for Railway deployment via Dockerfile. Push to `main` branch to auto-deploy.
+Configured for Railway deployment via Dockerfile.
 
 ## License
 
