@@ -10,6 +10,8 @@ from google.genai import types
 
 from app.config import GEMINI_FLASH_MODEL
 from app.engines.gemini_client import client as gemini_client
+from app.engines.retry_utils import with_retries
+from app.monitoring.runtime_metrics import incr
 from app.utils.logger import get_logger
 
 logger = get_logger("engines.claims")
@@ -57,35 +59,113 @@ async def extract_claims(text: str) -> list[str]:
         text = text[:MAX_INPUT_LENGTH]
 
     try:
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model=GEMINI_FLASH_MODEL,
-            contents=EXTRACTION_PROMPT.format(text=text),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.1,
-                max_output_tokens=1000,
-                system_instruction="You extract factual claims from text. Always respond with valid JSON.",
+        response = await with_retries(
+            "claims.extract",
+            lambda: asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model=GEMINI_FLASH_MODEL,
+                contents=EXTRACTION_PROMPT.format(text=text),
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                    max_output_tokens=1000,
+                    system_instruction="You extract factual claims from text. Always respond with valid JSON.",
+                ),
             ),
         )
 
         content = response.text or "[]"
-        parsed = json.loads(content)
-
-        if isinstance(parsed, list):
-            claims = parsed
-        elif isinstance(parsed, dict):
-            claims = parsed.get("claims", parsed.get("results", []))
-        else:
-            claims = []
+        claims = _parse_claims_payload(content)
 
         claims = [str(c).strip() for c in claims if c][:12]
         logger.info("Extracted %d claims from text (%d chars)", len(claims), len(text))
+        await incr(
+            "claim_extraction_success",
+            content_type="text",
+            provider="gemini",
+            model=GEMINI_FLASH_MODEL,
+        )
         return claims
 
     except Exception:
         logger.exception("Claim extraction failed")
+        await incr(
+            "claim_extraction_failure",
+            content_type="text",
+            provider="gemini",
+            model=GEMINI_FLASH_MODEL,
+            category="extract_failed",
+        )
         return []
+
+
+def _parse_claims_payload(content: str) -> list[str]:
+    """Parse model output into claim list with malformed JSON recovery."""
+    parsed = _try_json_loads(content)
+    if parsed is None:
+        payload = _extract_json_payload(content)
+        if payload != content:
+            parsed = _try_json_loads(payload)
+
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        claims = parsed.get("claims", parsed.get("results", []))
+        if isinstance(claims, list):
+            return claims
+
+    # Fail-soft: do not blow up pipeline for malformed outputs.
+    logger.warning(
+        "Claim extraction returned unparsable payload; returning empty claims (len=%d)",
+        len(content or ""),
+    )
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            incr(
+                "claim_extraction_failure",
+                content_type="text",
+                provider="gemini",
+                model=GEMINI_FLASH_MODEL,
+                category="parse",
+            )
+        )
+    except Exception:
+        pass
+    return []
+
+
+def _try_json_loads(value: str):
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+
+def _extract_json_payload(content: str) -> str:
+    """Best-effort JSON extraction from fenced or prefixed output."""
+    if not content:
+        return "[]"
+
+    cleaned = content.strip()
+
+    # Strip common markdown code fences.
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+        cleaned = cleaned.strip()
+
+    # Capture first JSON object/array in the response.
+    obj_match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    arr_match = re.search(r"\[.*\]", cleaned, flags=re.DOTALL)
+
+    candidates = [m.group(0) for m in (obj_match, arr_match) if m]
+    if candidates:
+        # Prefer object payload over generic arrays.
+        candidates.sort(key=lambda x: 0 if x.strip().startswith("{") else 1)
+        return candidates[0].strip()
+
+    return cleaned
 
 
 def filter_grounded_claims(source_text: str, claims: list[str]) -> list[str]:
@@ -142,18 +222,28 @@ async def translate_claim_to_english(text: str) -> str:
     if not text.strip():
         return text
     try:
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model=GEMINI_FLASH_MODEL,
-            contents=TRANSLATION_PROMPT.format(text=text),
-            config=types.GenerateContentConfig(
-                temperature=0,
-                max_output_tokens=300,
-                system_instruction="You translate claims to English exactly.",
+        response = await with_retries(
+            "claims.translate",
+            lambda: asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model=GEMINI_FLASH_MODEL,
+                contents=TRANSLATION_PROMPT.format(text=text),
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    max_output_tokens=300,
+                    system_instruction="You translate claims to English exactly.",
+                ),
             ),
         )
         translated = (response.text or "").strip()
         return translated or text
     except Exception:
         logger.exception("Claim translation failed")
+        await incr(
+            "claim_translation_failure",
+            content_type="text",
+            provider="gemini",
+            model=GEMINI_FLASH_MODEL,
+            category="translate_failed",
+        )
         return text

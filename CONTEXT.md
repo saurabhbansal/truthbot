@@ -72,19 +72,19 @@ Confidence scoring: base score from highest layer that returned results + bonus 
 
 ---
 
-## LLM Model Architecture (All-Gemini Primary, OpenAI Backup)
+## LLM Model Architecture (Stabilized Hybrid: Option C)
 
 | Task | Primary Model | Fallback | Why |
 |------|--------------|----------|-----|
 | Claim extraction | Gemini 2.5 Flash | — | Best multilingual, structured output, cost-efficient |
 | Claim translation | Gemini 2.5 Flash | — | Google's multilingual heritage, Hindi/regional native |
 | Verdict reasoning | Gemini 2.5 Pro | OpenAI GPT-5.4 | Strong reasoning with premium fallback quality |
-| Image analysis | Gemini 2.5 Pro (native image) | OpenAI GPT-4o (escalate GPT-5.4) | Lower OpenAI spend for media-heavy usage |
+| Image analysis | OpenAI GPT-4o | OpenAI GPT-5.4 (escalate on weak output), Gemini Pro (last resort) | Better real-world quality stability with controlled escalation |
 | Video analysis | Gemini 2.5 Pro (native) | ffmpeg + GPT-5.4 Vision + Whisper | Single API call replaces 4-step pipeline |
 | Audio analysis | Gemini 2.5 Pro (native) | OpenAI Whisper | Supports Hindi + regional languages with robust fallback |
 | OCR | Google Cloud Vision | — | Works well, no change needed |
 
-**Cost model**: Gemini free tier (1,500 req/day for Pro, 1,500 req/day for Flash) covers 25 users at 2-3 checks/day. OpenAI $5 credit is used for controlled fallback paths only.
+**Cost model**: Gemini handles extraction/translation/verdict/video-audio primary paths; OpenAI focuses on image primary plus controlled fallback/escalation. Production requires billed Gemini quota because free-tier limits are too low for burst traffic.
 
 ---
 
@@ -120,17 +120,17 @@ SPECIAL:
 
 ---
 
-## Image Processing Pipeline (Gemini-First)
+## Image Processing Pipeline (Option C: OpenAI Vision Primary)
 
-1. **Gemini 2.5 Pro image analysis** (parallel with OCR):
+1. **OpenAI GPT-4o image analysis** (parallel with OCR):
    - Visual description (people, objects, logos, screenshots)
    - Text transcription from image (headlines, captions, watermarks, social media posts)
    - Claim identification from visual and textual content
    - AI-generated/manipulated/deepfake assessment
    - Correct MIME type detection (JPEG, PNG, WebP via magic bytes)
-2. **Fallback policy**:
-   - First fallback: OpenAI GPT-4o image analysis
-   - Escalation fallback: OpenAI GPT-5.4 image analysis for hard failures
+2. **Escalation policy**:
+   - Escalate to OpenAI GPT-5.4 when GPT-4o output is weak/ambiguous
+   - Last-resort fallback: Gemini 2.5 Pro when OpenAI path is unavailable
 3. **Google Cloud Vision OCR** (DOCUMENT_TEXT_DETECTION)
 4. **AI detection**: Keywords in image analysis trigger "POSSIBLE AI-GENERATED IMAGE" warning
 5. **Combined fact-checking**: Caption + OCR text + analysis text all fed into text pipeline
@@ -303,7 +303,7 @@ X-Hub-Signature-256 header verified using META_APP_SECRET. In-memory dedup preve
 | Server | FastAPI + Uvicorn | Webhook server |
 | LLM (extraction) | Gemini 2.5 Flash | Claim extraction, translation |
 | LLM (verdict) | Gemini 2.5 Pro (fallback: OpenAI GPT-5.4) | Verdict reasoning |
-| LLM (image) | Gemini 2.5 Pro (fallback: OpenAI GPT-4o, escalate GPT-5.4) | Image analysis |
+| LLM (image) | OpenAI GPT-4o (escalate GPT-5.4, last-resort Gemini Pro) | Image analysis |
 | LLM (video/audio) | Gemini 2.5 Pro (native multimodal) | Video + audio analysis |
 | Fact-Check DB | Google Fact Check Tools API | Layer 1 source |
 | Web Search | Tavily API (basic depth) + Gemini Grounding fallback | Layers 2, 3 + article extraction |
@@ -322,7 +322,7 @@ X-Hub-Signature-256 header verified using META_APP_SECRET. In-memory dedup preve
 ```
 truthbot/
 ├── app/
-│   ├── main.py                    # FastAPI app, health + stats + legal endpoints + cache sweep
+│   ├── main.py                    # FastAPI app, health + stats + runtime-metrics + legal endpoints + cache sweep
 │   ├── config.py                  # Environment variables loader + validation (Gemini + OpenAI)
 │   ├── router/
 │   │   └── content_router.py      # Message dispatcher + daily usage limit checks + log_usage
@@ -331,7 +331,8 @@ truthbot/
 │   │   ├── claim_extractor.py     # Gemini Flash claim extraction + translation + grounding filter
 │   │   ├── verdict_engine.py      # Gemini Pro verdict logic (OpenAI GPT-5.4 fallback)
 │   │   ├── text_handler.py        # Full text pipeline + verdict caching + sensitive content guard
-│   │   ├── image_handler.py       # Gemini-first image analysis + OCR + OpenAI fallback policy
+│   │   ├── image_handler.py       # OpenAI-primary image analysis + OCR + targeted escalation
+│   │   ├── retry_utils.py         # Bounded retry/backoff + rate-limit/transient error helpers
 │   │   ├── video_handler.py       # Gemini Pro native video (fallback: ffmpeg+Vision+Whisper)
 │   │   ├── audio_handler.py       # Gemini Pro native audio analysis
 │   │   ├── link_handler.py        # 4-tier video link pipeline + article extraction
@@ -346,6 +347,8 @@ truthbot/
 │   ├── verdict/
 │   │   ├── confidence.py          # Verdict labels enum, confidence thresholds
 │   │   └── formatter.py           # Verdict-first WhatsApp formatting + multi-verdict synthesis
+│   ├── monitoring/
+│   │   └── runtime_metrics.py     # In-memory counters for quota/parse/fallback/success signals
 │   ├── feedback/
 │   │   └── feedback_handler.py    # 2-step feedback flow, revision handling, dashboard query helpers
 │   ├── db/

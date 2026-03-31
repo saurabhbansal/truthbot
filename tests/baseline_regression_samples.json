@@ -1,0 +1,78 @@
+{
+  "version": "stabilization-v1",
+  "notes": "Fill with real sample messages/links from known-good and regression periods.",
+  "content_types": {
+    "text": [
+      {
+        "sample_id": "text-001",
+        "input": "",
+        "expected_profile": {
+          "verdict_style": "decisive_or_nuanced",
+          "claim_relevance": "high",
+          "source_quality": "official_or_reliable_news",
+          "conciseness": "single_message_preferred"
+        }
+      }
+    ],
+    "image": [
+      {
+        "sample_id": "image-001",
+        "input_ref": "",
+        "expected_profile": {
+          "verdict_style": "decisive_or_nuanced",
+          "claim_relevance": "high",
+          "source_quality": "official_or_reliable_news",
+          "conciseness": "single_message_preferred"
+        }
+      }
+    ],
+    "video_link": [
+      {
+        "sample_id": "video-link-001",
+        "input": "",
+        "expected_profile": {
+          "verdict_style": "decisive_or_nuanced",
+          "claim_relevance": "high",
+          "source_quality": "official_or_reliable_news",
+          "conciseness": "single_message_preferred"
+        }
+      }
+    ],
+    "uploaded_video": [
+      {
+        "sample_id": "uploaded-video-001",
+        "input_ref": "",
+        "expected_profile": {
+          "verdict_style": "decisive_or_nuanced",
+          "claim_relevance": "high",
+          "source_quality": "official_or_reliable_news",
+          "conciseness": "single_message_preferred"
+        }
+      }
+    ],
+    "audio": [
+      {
+        "sample_id": "audio-001",
+        "input_ref": "",
+        "expected_profile": {
+          "verdict_style": "decisive_or_nuanced",
+          "claim_relevance": "high",
+          "source_quality": "official_or_reliable_news",
+          "conciseness": "single_message_preferred"
+        }
+      }
+    ],
+    "mixed_media": [
+      {
+        "sample_id": "mixed-001",
+        "input_ref": "",
+        "expected_profile": {
+          "verdict_style": "decisive_or_nuanced",
+          "claim_relevance": "high",
+          "source_quality": "official_or_reliable_news",
+          "conciseness": "single_message_preferred"
+        }
+      }
+    ]
+  }
+}

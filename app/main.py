@@ -11,6 +11,7 @@ from app.db.cache import sweep_expired_cache
 from app.db.database import init_db
 from app.db.usage import get_message_type_trend, get_stats, sweep_retention_data
 from app.feedback.feedback_handler import get_feedback_stats
+from app.monitoring.runtime_metrics import snapshot as runtime_metrics_snapshot
 from app.whatsapp.webhook import router as whatsapp_router
 
 logging.basicConfig(
@@ -56,6 +57,11 @@ async def feedback_stats(days: int = 30) -> dict:
     trend = await get_message_type_trend(days=days)
     feedback["message_type_trend"] = trend
     return feedback
+
+
+@app.get("/runtime-metrics")
+async def runtime_metrics() -> dict:
+    return {"metrics": await runtime_metrics_snapshot()}
 
 
 @app.get("/admin/feedback", response_class=HTMLResponse)

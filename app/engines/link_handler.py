@@ -25,6 +25,7 @@ from app.config import (
 )
 from app.engines.text_handler import fact_check_text
 from app.engines.video_handler import analyze_video_file
+from app.monitoring.runtime_metrics import incr
 from app.sources.allowlists import (
     ALL_NEWS_DOMAINS,
     ALL_OFFICIAL_DOMAINS,
@@ -84,6 +85,7 @@ _VIDEO_PATH_PATTERNS = (
 )
 
 _MIN_TRANSCRIPT_LENGTH = 100
+_NO_CLAIMS_HINT = "I couldn't isolate any clear factual claims"
 
 
 def extract_urls(text: str) -> list[str]:
@@ -212,8 +214,19 @@ async def _handle_video_link(url: str, domain: str) -> str:
 
     if transcript and len(transcript) >= _MIN_TRANSCRIPT_LENGTH:
         parts = ["📹 *Checking claims from this video transcript:*", ""]
-        text_message, _ = await fact_check_text(transcript[:4000])
+        text_message, verdicts = await fact_check_text(transcript[:4000])
+        if not verdicts and _NO_CLAIMS_HINT in text_message:
+            await incr("video_link_degraded", content_type="video_link", category="no_claims_from_transcript")
+            parts.append(
+                "I extracted transcript text but couldn't isolate stable factual claims automatically."
+            )
+            parts.append("")
+            parts.append(
+                "Please send 1-2 exact claims from the video as text for a precise check."
+            )
+            return "\n".join(parts)
         parts.append(text_message)
+        await incr("video_link_success", content_type="video_link", category="transcript")
         return "\n".join(parts)
 
     # --- Tier 3: Metadata + web search ---
@@ -230,7 +243,17 @@ async def _handle_video_link(url: str, domain: str) -> str:
     # If we have strong metadata + search results with fact-checks, use them
     if search_context and combined_meta:
         parts = [f"📹 *Checking claims from this video ({domain}):*", ""]
-        text_message, _ = await fact_check_text(combined_meta[:4000])
+        text_message, verdicts = await fact_check_text(combined_meta[:4000])
+        if not verdicts and _NO_CLAIMS_HINT in text_message:
+            await incr("video_link_degraded", content_type="video_link", category="no_claims_from_metadata")
+            parts.append(
+                "I found metadata and web context, but not enough extractable claims for a confident verdict."
+            )
+            parts.append("")
+            parts.append(
+                "Share the exact spoken/onscreen claim text and I will verify it against reliable sources."
+            )
+            return "\n".join(parts)
         parts.append(text_message)
         parts.append("")
         parts.append(
@@ -238,6 +261,7 @@ async def _handle_video_link(url: str, domain: str) -> str:
             "For the most accurate check, you can also type out the specific claim "
             "from the video as text._"
         )
+        await incr("video_link_success", content_type="video_link", category="metadata_web")
         return "\n".join(parts)
 
     # --- Tier 4: Full download + analysis ---
@@ -245,12 +269,23 @@ async def _handle_video_link(url: str, domain: str) -> str:
     video_result = await _download_and_analyze_video(url, caption=title)
 
     if video_result:
+        await incr("video_link_success", content_type="video_link", category="tier4_download")
         return video_result
 
     # If we have some metadata but download failed, use what we have
     if combined_meta:
         parts = [f"📹 *Checking claims from this video ({domain}):*", ""]
-        text_message, _ = await fact_check_text(combined_meta[:4000])
+        text_message, verdicts = await fact_check_text(combined_meta[:4000])
+        if not verdicts and _NO_CLAIMS_HINT in text_message:
+            await incr("video_link_degraded", content_type="video_link", category="metadata_only_no_claims")
+            parts.append(
+                "I couldn't extract enough structured claims from metadata alone."
+            )
+            parts.append("")
+            parts.append(
+                "For best accuracy, upload the video or send the exact claim text."
+            )
+            return "\n".join(parts)
         parts.append(text_message)
         parts.append("")
         parts.append(
@@ -258,9 +293,11 @@ async def _handle_video_link(url: str, domain: str) -> str:
             "the title and description. For a more accurate check, upload the video or "
             "type out the specific claim._"
         )
+        await incr("video_link_degraded", content_type="video_link", category="metadata_only")
         return "\n".join(parts)
 
     # All tiers failed
+    await incr("video_link_failure", content_type="video_link", category="all_tiers_failed")
     return (
         f"📹 *Video link from:* _{domain}_\n\n"
         "I couldn't extract content from this video link.\n\n"

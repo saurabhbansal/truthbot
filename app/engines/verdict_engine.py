@@ -17,6 +17,8 @@ from openai import AsyncOpenAI
 
 from app.config import OPENAI_API_KEY, GEMINI_PRO_MODEL
 from app.engines.gemini_client import client as gemini_client
+from app.engines.retry_utils import is_rate_limit_error, with_retries
+from app.monitoring.runtime_metrics import incr
 from app.sources.source_trust import SourceEvidence
 from app.verdict.confidence import VerdictLabel
 from app.utils.logger import get_logger
@@ -130,34 +132,17 @@ async def produce_verdict(claim: str, evidence: SourceEvidence) -> Verdict:
 
     try:
         try:
-            gemini_response = await asyncio.to_thread(
-                gemini_client.models.generate_content,
-                model=GEMINI_PRO_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1,
-                    max_output_tokens=1500,
-                    system_instruction=(
-                        "You are a neutral, non-partisan fact-checking engine. "
-                        "Respond ONLY with valid JSON. Never fabricate sources. "
-                        "Be decisive — if evidence points toward false, say FALSE. "
-                        "Only say UNVERIFIED for truly obscure claims with zero related information. "
-                        "Never editorialize, never take sides, never praise or criticize any entity. "
-                        "State facts only. Be concise: for clear-cut verdicts keep explanations to 2-3 sentences, "
-                        "for nuanced verdicts use 4-6 sentences."
-                    ),
-                ),
-            )
-            content = gemini_response.text or "{}"
-        except Exception:
-            logger.warning("Gemini verdict failed, falling back to OpenAI")
-            response = await _openai_client.chat.completions.create(
-                model="gpt-5.4",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
+            gemini_response = await with_retries(
+                "verdict.gemini",
+                lambda: asyncio.to_thread(
+                    gemini_client.models.generate_content,
+                    model=GEMINI_PRO_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.1,
+                        max_output_tokens=1500,
+                        system_instruction=(
                             "You are a neutral, non-partisan fact-checking engine. "
                             "Respond ONLY with valid JSON. Never fabricate sources. "
                             "Be decisive — if evidence points toward false, say FALSE. "
@@ -166,14 +151,66 @@ async def produce_verdict(claim: str, evidence: SourceEvidence) -> Verdict:
                             "State facts only. Be concise: for clear-cut verdicts keep explanations to 2-3 sentences, "
                             "for nuanced verdicts use 4-6 sentences."
                         ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.1,
-                max_tokens=1500,
-                response_format={"type": "json_object"},
+                    ),
+                ),
+            )
+            content = gemini_response.text or "{}"
+            await incr(
+                "verdict_primary_success",
+                content_type="text",
+                provider="gemini",
+                model=GEMINI_PRO_MODEL,
+            )
+        except Exception as exc:
+            if is_rate_limit_error(exc):
+                logger.warning("Gemini verdict rate-limited; falling back to OpenAI")
+                await incr(
+                    "verdict_primary_failure",
+                    content_type="text",
+                    provider="gemini",
+                    model=GEMINI_PRO_MODEL,
+                    category="quota",
+                )
+            else:
+                logger.warning("Gemini verdict failed; falling back to OpenAI")
+                await incr(
+                    "verdict_primary_failure",
+                    content_type="text",
+                    provider="gemini",
+                    model=GEMINI_PRO_MODEL,
+                    category="runtime",
+                )
+            response = await with_retries(
+                "verdict.openai_fallback",
+                lambda: _openai_client.chat.completions.create(
+                    model="gpt-5.4",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a neutral, non-partisan fact-checking engine. "
+                                "Respond ONLY with valid JSON. Never fabricate sources. "
+                                "Be decisive — if evidence points toward false, say FALSE. "
+                                "Only say UNVERIFIED for truly obscure claims with zero related information. "
+                                "Never editorialize, never take sides, never praise or criticize any entity. "
+                                "State facts only. Be concise: for clear-cut verdicts keep explanations to 2-3 sentences, "
+                                "for nuanced verdicts use 4-6 sentences."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.1,
+                    max_completion_tokens=1500,
+                    response_format={"type": "json_object"},
+                ),
             )
             content = response.choices[0].message.content or "{}"
+            await incr(
+                "verdict_fallback_success",
+                content_type="text",
+                provider="openai",
+                model="gpt-5.4",
+            )
         data = json.loads(content)
 
         label_str = data.get("label", "UNVERIFIED").upper()
@@ -210,6 +247,11 @@ async def produce_verdict(claim: str, evidence: SourceEvidence) -> Verdict:
 
     except Exception:
         logger.exception("Verdict engine failed for claim: %s", claim[:60])
+        await incr(
+            "verdict_failure",
+            content_type="text",
+            category="fatal",
+        )
         return Verdict(
             label=VerdictLabel.UNVERIFIED,
             confidence=0.1,

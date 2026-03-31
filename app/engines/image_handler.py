@@ -1,4 +1,4 @@
-"""Image fact-check handler -- Gemini-first image analysis with OpenAI fallback."""
+"""Image fact-check handler -- OpenAI vision primary with targeted escalation."""
 
 from __future__ import annotations
 
@@ -10,8 +10,10 @@ from openai import AsyncOpenAI
 
 from app.config import GEMINI_PRO_MODEL, OPENAI_API_KEY
 from app.engines.gemini_client import client as gemini_client
+from app.engines.retry_utils import is_rate_limit_error, with_retries
 from app.engines.ocr import extract_text_from_image
 from app.engines.text_handler import fact_check_text
+from app.monitoring.runtime_metrics import incr
 from app.utils.logger import get_logger
 
 logger = get_logger("engines.image")
@@ -46,23 +48,44 @@ async def _analyze_image_with_gemini(image_bytes: bytes) -> str:
     """Analyze image with Gemini first to reduce OpenAI cost."""
     mime = _detect_image_mime(image_bytes)
     try:
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model=GEMINI_PRO_MODEL,
-            contents=[
-                _VISION_PROMPT,
-                types.Part.from_bytes(data=image_bytes, mime_type=mime),
-            ],
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=1500,
+        response = await with_retries(
+            "image.gemini",
+            lambda: asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model=GEMINI_PRO_MODEL,
+                contents=[
+                    _VISION_PROMPT,
+                    types.Part.from_bytes(data=image_bytes, mime_type=mime),
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=1500,
+                ),
             ),
         )
         content = response.text or ""
         logger.info("Gemini image analysis: %d chars", len(content))
+        await incr("vision_success", content_type="image", provider="gemini", model=GEMINI_PRO_MODEL)
         return content.strip()
-    except Exception:
-        logger.exception("Gemini image analysis failed")
+    except Exception as exc:
+        if is_rate_limit_error(exc):
+            logger.warning("Gemini image analysis rate-limited")
+            await incr(
+                "vision_failure",
+                content_type="image",
+                provider="gemini",
+                model=GEMINI_PRO_MODEL,
+                category="quota",
+            )
+        else:
+            logger.exception("Gemini image analysis failed")
+            await incr(
+                "vision_failure",
+                content_type="image",
+                provider="gemini",
+                model=GEMINI_PRO_MODEL,
+                category="runtime",
+            )
         return ""
 
 
@@ -71,33 +94,44 @@ async def _analyze_image_with_openai(image_bytes: bytes, model: str) -> str:
     b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
     try:
-        response = await _client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": _VISION_PROMPT},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{_detect_image_mime(image_bytes)};base64,{b64_image}",
-                                "detail": "high",
+        response = await with_retries(
+            f"image.openai.{model}",
+            lambda: _client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": _VISION_PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{_detect_image_mime(image_bytes)};base64,{b64_image}",
+                                    "detail": "high",
+                                },
                             },
-                        },
-                    ],
-                }
-            ],
-            max_tokens=1500,
-            temperature=0.1,
+                        ],
+                    }
+                ],
+                max_tokens=1500,
+                temperature=0.1,
+            ),
         )
 
         content = response.choices[0].message.content or ""
         logger.info("OpenAI image analysis (%s): %d chars", model, len(content))
+        await incr("vision_success", content_type="image", provider="openai", model=model)
         return content.strip()
 
     except Exception:
         logger.exception("OpenAI image analysis failed for model=%s", model)
+        await incr(
+            "vision_failure",
+            content_type="image",
+            provider="openai",
+            model=model,
+            category="runtime",
+        )
         return ""
 
 
@@ -110,13 +144,17 @@ async def fact_check_image(image_bytes: bytes, caption: str = "") -> str:
     """
     ocr_task = extract_text_from_image(image_bytes)
     vision_analysis, ocr_text = await asyncio.gather(
-        _analyze_image_with_gemini(image_bytes),
+        _analyze_image_with_openai(image_bytes, model="gpt-4o"),
         ocr_task,
     )
+    if _needs_escalation(vision_analysis):
+        logger.info("Image analysis escalation triggered -> gpt-5.4")
+        escalated = await _analyze_image_with_openai(image_bytes, model="gpt-5.4")
+        if escalated:
+            vision_analysis = escalated
     if not vision_analysis:
-        vision_analysis = await _analyze_image_with_openai(image_bytes, model="gpt-4o")
-    if not vision_analysis:
-        vision_analysis = await _analyze_image_with_openai(image_bytes, model="gpt-5.4")
+        # Last resort if OpenAI path is unavailable.
+        vision_analysis = await _analyze_image_with_gemini(image_bytes)
 
     parts: list[str] = []
 
@@ -168,3 +206,24 @@ async def fact_check_image(image_bytes: bytes, caption: str = "") -> str:
             )
 
     return "\n".join(parts)
+
+
+def _needs_escalation(analysis: str) -> bool:
+    """Escalate when primary analysis is weak/ambiguous."""
+    if not analysis:
+        return True
+
+    normalized = analysis.lower()
+    weak_markers = (
+        "can't determine",
+        "cannot determine",
+        "unclear",
+        "not enough context",
+        "unable to",
+        "insufficient detail",
+    )
+    if any(marker in normalized for marker in weak_markers):
+        return True
+
+    # Extremely short responses are often too thin for reliable claim extraction.
+    return len(analysis.strip()) < 220
