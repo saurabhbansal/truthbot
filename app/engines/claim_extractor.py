@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
 import re
 
@@ -106,6 +107,8 @@ def _parse_claims_payload(content: str) -> list[str]:
         payload = _extract_json_payload(content)
         if payload != content:
             parsed = _try_json_loads(payload)
+            if parsed is None:
+                parsed = _try_python_literal(payload)
 
     if isinstance(parsed, list):
         return parsed
@@ -114,10 +117,20 @@ def _parse_claims_payload(content: str) -> list[str]:
         if isinstance(claims, list):
             return claims
 
+    recovered = _recover_claims_from_text(content)
+    if recovered:
+        logger.warning(
+            "Recovered %d claims from non-JSON extraction payload (len=%d)",
+            len(recovered),
+            len(content or ""),
+        )
+        return recovered
+
     # Fail-soft: do not blow up pipeline for malformed outputs.
     logger.warning(
-        "Claim extraction returned unparsable payload; returning empty claims (len=%d)",
+        "Claim extraction returned unparsable payload; returning empty claims (len=%d, sample=%r)",
         len(content or ""),
+        (content or "")[:200],
     )
     try:
         loop = asyncio.get_running_loop()
@@ -138,6 +151,14 @@ def _parse_claims_payload(content: str) -> list[str]:
 def _try_json_loads(value: str):
     try:
         return json.loads(value)
+    except Exception:
+        return None
+
+
+def _try_python_literal(value: str):
+    """Fallback parser for JSON-like Python literals."""
+    try:
+        return ast.literal_eval(value)
     except Exception:
         return None
 
@@ -166,6 +187,68 @@ def _extract_json_payload(content: str) -> str:
         return candidates[0].strip()
 
     return cleaned
+
+
+def _recover_claims_from_text(content: str) -> list[str]:
+    """Recover claims from bullet/quoted/plain outputs when JSON parsing fails."""
+    if not content:
+        return []
+
+    text = content.strip()
+    claims: list[str] = []
+
+    # Try quoted-string extraction from claim-like arrays first.
+    for match in re.finditer(r'"([^"\n]{8,})"|\'([^\'\n]{8,})\'', text):
+        value = (match.group(1) or match.group(2) or "").strip()
+        if _looks_like_claim(value):
+            claims.append(value)
+
+    if claims:
+        return _dedupe_preserve_order(claims)[:12]
+
+    # Fallback: line-based bullet parsing.
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[-*•\d\.\)\(]+\s*", "", line).strip()
+        if _looks_like_claim(line):
+            claims.append(line)
+
+    return _dedupe_preserve_order(claims)[:12]
+
+
+def _looks_like_claim(text: str) -> bool:
+    lowered = text.lower().strip()
+    if len(lowered) < 12:
+        return False
+    if lowered in {"claims", "claim", "none", "n/a"}:
+        return False
+    if lowered.startswith("{") or lowered.startswith("["):
+        return False
+    # Avoid obvious meta/instruction text leakage.
+    blocked_prefixes = (
+        "return a json",
+        "if no verifiable",
+        "text to analyze",
+        "example:",
+        "no verifiable claims",
+    )
+    if any(lowered.startswith(prefix) for prefix in blocked_prefixes):
+        return False
+    return True
+
+
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        norm = re.sub(r"\s+", " ", item).strip().lower()
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(item.strip())
+    return out
 
 
 def filter_grounded_claims(source_text: str, claims: list[str]) -> list[str]:
