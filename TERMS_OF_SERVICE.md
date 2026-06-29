@@ -39,5 +39,5 @@ To the maximum extent allowed by law, we are not liable for indirect or conseque
 
 ## 8) Contact
 
-For support or policy questions: `sbansal1993@gmail.com`
+For support or policy questions: `your-public-contact@example.com`
 

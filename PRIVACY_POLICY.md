@@ -7,7 +7,7 @@ TruthBot is a WhatsApp-based fact-checking assistant. This Privacy Policy explai
 ## 1) Who we are
 
 TruthBot is operated by the app owner ("we", "us", "our").  
-Contact: `sbansal1993@gmail.com`
+Contact: `your-public-contact@example.com`
 
 ## 2) What data we process
 
@@ -74,7 +74,7 @@ You can request deletion of your TruthBot-related data by following the instruct
 
 - `DATA_DELETION.md` in this repository (or its published URL)
 
-For requests, contact: `sbansal1993@gmail.com`
+For requests, contact: `your-public-contact@example.com`
 
 ## 10) Children's privacy
 

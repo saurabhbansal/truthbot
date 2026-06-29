@@ -137,7 +137,7 @@ async def privacy_policy() -> str:
         <h2>Third-Party Services</h2>
         <p>TruthBot may use Meta WhatsApp Cloud API, OpenAI, Google Gemini, Tavily, Google APIs, and cloud hosting providers to deliver functionality.</p>
         <h2>Contact</h2>
-        <p>Email: <a href="mailto:factfuryteam@gmail.com">factfuryteam@gmail.com</a></p>
+        <p>Email: <a href="mailto:your-public-contact@example.com">your-public-contact@example.com</a></p>
         <h2>Data Deletion</h2>
         <p>See <a href="/data-deletion">Data Deletion Instructions</a>.</p>
       </body>
@@ -155,7 +155,7 @@ async def terms() -> str:
         <p><strong>Last updated:</strong> 2026-03-24</p>
         <p>TruthBot provides best-effort fact-checking and is for informational purposes only. It is not legal, medical, or financial advice.</p>
         <p>Users must not abuse the service or submit unlawful content.</p>
-        <p>Contact: <a href="mailto:factfuryteam@gmail.com">factfuryteam@gmail.com</a></p>
+        <p>Contact: <a href="mailto:your-public-contact@example.com">your-public-contact@example.com</a></p>
       </body>
     </html>
     """
@@ -168,7 +168,7 @@ async def data_deletion() -> str:
       <head><title>TruthBot Data Deletion Instructions</title></head>
       <body style="font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; line-height: 1.6;">
         <h1>TruthBot Data Deletion Instructions</h1>
-        <p>Email <a href="mailto:factfuryteam@gmail.com">factfuryteam@gmail.com</a> with subject
+        <p>Email <a href="mailto:your-public-contact@example.com">your-public-contact@example.com</a> with subject
         <strong>TruthBot data deletion request</strong> and include your WhatsApp number in international format.</p>
         <p>We target completion within 7 business days.</p>
       </body>
